@@ -1,0 +1,155 @@
+import { useEffect, useRef, useState } from 'react';
+import { Container, LogEntry } from '@/types/kubernetes';
+import { generateMockLogs } from '@/data/mockData';
+import { cn } from '@/lib/utils';
+import { format } from 'date-fns';
+import { Terminal, Download, Trash2, Search, ArrowDown } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+
+interface LogViewerProps {
+  container: Container;
+}
+
+export const LogViewer = ({ container }: LogViewerProps) => {
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [autoScroll, setAutoScroll] = useState(true);
+  const logsEndRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setLogs(generateMockLogs(container.id));
+  }, [container.id]);
+
+  useEffect(() => {
+    if (autoScroll && logsEndRef.current) {
+      logsEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [logs, autoScroll]);
+
+  const filteredLogs = logs.filter((log) =>
+    log.message.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  const handleScroll = () => {
+    if (containerRef.current) {
+      const { scrollTop, scrollHeight, clientHeight } = containerRef.current;
+      const isAtBottom = scrollHeight - scrollTop - clientHeight < 50;
+      setAutoScroll(isAtBottom);
+    }
+  };
+
+  const scrollToBottom = () => {
+    logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    setAutoScroll(true);
+  };
+
+  const downloadLogs = () => {
+    const content = logs
+      .map((log) => `${format(new Date(log.timestamp), 'yyyy-MM-dd HH:mm:ss')} [${log.level.toUpperCase()}] ${log.message}`)
+      .join('\n');
+    const blob = new Blob([content], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${container.name}-logs.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="h-full flex flex-col terminal-window">
+      {/* Terminal Header */}
+      <div className="terminal-header">
+        <div className="flex items-center gap-2 flex-1">
+          <div className="terminal-dot bg-[hsl(var(--status-error))]" />
+          <div className="terminal-dot bg-[hsl(var(--status-warning))]" />
+          <div className="terminal-dot bg-[hsl(var(--status-ready))]" />
+          <div className="ml-3 flex items-center gap-2">
+            <Terminal className="w-4 h-4 text-muted-foreground" />
+            <span className="font-mono text-sm">{container.name}</span>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <div className="relative">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+            <Input
+              placeholder="Filter logs..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="h-7 w-48 pl-8 text-xs bg-background/50 border-border"
+            />
+          </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            onClick={downloadLogs}
+            title="Download logs"
+          >
+            <Download className="w-3.5 h-3.5" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            onClick={() => setLogs([])}
+            title="Clear logs"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </Button>
+        </div>
+      </div>
+
+      {/* Log Content */}
+      <div
+        ref={containerRef}
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto scrollbar-thin bg-[hsl(var(--terminal-bg))]"
+      >
+        {filteredLogs.length === 0 ? (
+          <div className="flex items-center justify-center h-full text-muted-foreground">
+            <div className="text-center">
+              <Terminal className="w-12 h-12 mx-auto mb-2 opacity-50" />
+              <p>{searchTerm ? 'No matching logs found' : 'No logs available'}</p>
+            </div>
+          </div>
+        ) : (
+          <div className="py-2">
+            {filteredLogs.map((log) => (
+              <div key={log.id} className="log-line">
+                <span className="log-timestamp">
+                  {format(new Date(log.timestamp), 'HH:mm:ss')}
+                </span>
+                <span
+                  className={cn(
+                    log.level === 'info' && 'log-info',
+                    log.level === 'warn' && 'log-warn',
+                    log.level === 'error' && 'log-error'
+                  )}
+                >
+                  [{log.level.toUpperCase().padEnd(5)}]
+                </span>
+                <span className="ml-2">{log.message}</span>
+              </div>
+            ))}
+            <div ref={logsEndRef} />
+          </div>
+        )}
+      </div>
+
+      {/* Scroll to bottom button */}
+      {!autoScroll && (
+        <Button
+          onClick={scrollToBottom}
+          className="absolute bottom-4 right-4 h-8 px-3 bg-primary/90 hover:bg-primary shadow-lg"
+        >
+          <ArrowDown className="w-3.5 h-3.5 mr-1" />
+          Follow
+        </Button>
+      )}
+    </div>
+  );
+};
