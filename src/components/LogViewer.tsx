@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { Container, LogEntry } from '@/types/kubernetes';
-import { generateMockLogs } from '@/data/mockData';
+import { useContainerLogs } from '@/hooks/useKubernetesData';
 import { cn } from '@/lib/utils';
 import { format } from 'date-fns';
-import { Terminal, Download, Trash2, Search, ArrowDown } from 'lucide-react';
+import { Terminal, Download, Trash2, Search, ArrowDown, Loader2 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 
@@ -12,15 +12,11 @@ interface LogViewerProps {
 }
 
 export const LogViewer = ({ container }: LogViewerProps) => {
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const { data: logs = [], isLoading, error } = useContainerLogs(container.id);
   const [searchTerm, setSearchTerm] = useState('');
   const [autoScroll, setAutoScroll] = useState(true);
   const logsEndRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    setLogs(generateMockLogs(container.id));
-  }, [container.id]);
 
   useEffect(() => {
     if (autoScroll && logsEndRef.current) {
@@ -91,15 +87,6 @@ export const LogViewer = ({ container }: LogViewerProps) => {
           >
             <Download className="w-3.5 h-3.5" />
           </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7"
-            onClick={() => setLogs([])}
-            title="Clear logs"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-          </Button>
         </div>
       </div>
 
@@ -109,7 +96,18 @@ export const LogViewer = ({ container }: LogViewerProps) => {
         onScroll={handleScroll}
         className="flex-1 overflow-y-auto scrollbar-thin bg-[hsl(var(--terminal-bg))]"
       >
-        {filteredLogs.length === 0 ? (
+        {isLoading ? (
+          <div className="flex items-center justify-center h-full text-muted-foreground">
+            <Loader2 className="w-8 h-8 animate-spin" />
+          </div>
+        ) : error ? (
+          <div className="flex items-center justify-center h-full text-destructive">
+            <div className="text-center">
+              <p>Error loading logs</p>
+              <p className="text-sm">{error.message}</p>
+            </div>
+          </div>
+        ) : filteredLogs.length === 0 ? (
           <div className="flex items-center justify-center h-full text-muted-foreground">
             <div className="text-center">
               <Terminal className="w-12 h-12 mx-auto mb-2 opacity-50" />

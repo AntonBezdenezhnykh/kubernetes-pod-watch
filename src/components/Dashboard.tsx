@@ -1,14 +1,16 @@
 import { useState } from 'react';
 import { Pod, Container } from '@/types/kubernetes';
-import { mockPods } from '@/data/mockData';
+import { usePods } from '@/hooks/useKubernetesData';
 import { PodList } from './PodList';
 import { PodDetails } from './PodDetails';
 import { LogViewer } from './LogViewer';
-import { Layers, Box, Terminal, Activity } from 'lucide-react';
+import { Layers, Box, Terminal, Activity, Loader2 } from 'lucide-react';
 
 export const Dashboard = () => {
   const [selectedPod, setSelectedPod] = useState<Pod | null>(null);
   const [selectedContainer, setSelectedContainer] = useState<Container | null>(null);
+  
+  const { data: pods = [], isLoading, error } = usePods();
 
   const handleSelectPod = (pod: Pod) => {
     setSelectedPod(pod);
@@ -20,10 +22,10 @@ export const Dashboard = () => {
   };
 
   // Stats
-  const totalPods = mockPods.length;
-  const runningPods = mockPods.filter((p) => p.status === 'Running').length;
-  const errorPods = mockPods.filter((p) => ['Error', 'OOMKilled', 'CrashLoopBackOff'].includes(p.status)).length;
-  const pendingPods = mockPods.filter((p) => p.status === 'Pending').length;
+  const totalPods = pods.length;
+  const runningPods = pods.filter((p) => p.status === 'Running').length;
+  const errorPods = pods.filter((p) => ['Error', 'OOMKilled', 'CrashLoopBackOff'].includes(p.status)).length;
+  const pendingPods = pods.filter((p) => p.status === 'Pending').length;
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -73,11 +75,24 @@ export const Dashboard = () => {
         <div className="grid grid-cols-12 gap-4 h-[calc(100vh-120px)]">
           {/* Pod List */}
           <div className="col-span-4 glass-panel overflow-hidden">
-            <PodList
-              pods={mockPods}
-              selectedPodId={selectedPod?.id ?? null}
-              onSelectPod={handleSelectPod}
-            />
+            {isLoading ? (
+              <div className="h-full flex items-center justify-center">
+                <Loader2 className="w-8 h-8 animate-spin text-primary" />
+              </div>
+            ) : error ? (
+              <div className="h-full flex items-center justify-center text-destructive">
+                <div className="text-center">
+                  <p className="text-lg">Error loading pods</p>
+                  <p className="text-sm">{error.message}</p>
+                </div>
+              </div>
+            ) : (
+              <PodList
+                pods={pods}
+                selectedPodId={selectedPod?.id ?? null}
+                onSelectPod={handleSelectPod}
+              />
+            )}
           </div>
 
           {/* Pod Details & Logs */}
