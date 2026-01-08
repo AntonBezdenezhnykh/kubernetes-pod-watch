@@ -1,4 +1,5 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { Tables } from '@/integrations/supabase/types';
 import { Pod, Container, LogEntry } from '@/types/kubernetes';
@@ -48,10 +49,35 @@ const transformLog = (dbLog: DbLog): LogEntry => ({
 });
 
 export const usePods = () => {
+  const queryClient = useQueryClient();
+
+  useEffect(() => {
+    const channel = supabase
+      .channel('pods-realtime')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'pods' },
+        () => {
+          queryClient.invalidateQueries({ queryKey: ['pods'] });
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'containers' },
+        () => {
+          queryClient.invalidateQueries({ queryKey: ['pods'] });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [queryClient]);
+
   return useQuery({
     queryKey: ['pods'],
     queryFn: async (): Promise<Pod[]> => {
-      // Fetch all pods
       const { data: podsData, error: podsError } = await supabase
         .from('pods')
         .select('*')
@@ -59,14 +85,12 @@ export const usePods = () => {
 
       if (podsError) throw podsError;
 
-      // Fetch all containers
       const { data: containersData, error: containersError } = await supabase
         .from('containers')
         .select('*');
 
       if (containersError) throw containersError;
 
-      // Group containers by pod_id
       const containersByPodId = (containersData ?? []).reduce<Record<string, Container[]>>(
         (acc, container) => {
           const podId = container.pod_id;
@@ -77,7 +101,6 @@ export const usePods = () => {
         {}
       );
 
-      // Transform pods with their containers
       return (podsData ?? []).map((pod) =>
         transformPod(pod, containersByPodId[pod.id] ?? [])
       );
@@ -86,6 +109,32 @@ export const usePods = () => {
 };
 
 export const useContainerLogs = (containerId: string | null) => {
+  const queryClient = useQueryClient();
+
+  useEffect(() => {
+    if (!containerId) return;
+
+    const channel = supabase
+      .channel(`logs-realtime-${containerId}`)
+      .on(
+        'postgres_changes',
+        { 
+          event: '*', 
+          schema: 'public', 
+          table: 'logs',
+          filter: `container_id=eq.${containerId}`
+        },
+        () => {
+          queryClient.invalidateQueries({ queryKey: ['logs', containerId] });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [containerId, queryClient]);
+
   return useQuery({
     queryKey: ['logs', containerId],
     queryFn: async (): Promise<LogEntry[]> => {
