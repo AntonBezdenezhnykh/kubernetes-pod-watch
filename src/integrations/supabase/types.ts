@@ -14,7 +14,136 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      containers: {
+        Row: {
+          created_at: string
+          id: string
+          image: string
+          last_state_exit_code: number | null
+          last_state_message: string | null
+          last_state_reason: string | null
+          name: string
+          pod_id: string
+          ready: boolean | null
+          restart_count: number | null
+          started_at: string | null
+          status: Database["public"]["Enums"]["container_status"]
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          image: string
+          last_state_exit_code?: number | null
+          last_state_message?: string | null
+          last_state_reason?: string | null
+          name: string
+          pod_id: string
+          ready?: boolean | null
+          restart_count?: number | null
+          started_at?: string | null
+          status?: Database["public"]["Enums"]["container_status"]
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          image?: string
+          last_state_exit_code?: number | null
+          last_state_message?: string | null
+          last_state_reason?: string | null
+          name?: string
+          pod_id?: string
+          ready?: boolean | null
+          restart_count?: number | null
+          started_at?: string | null
+          status?: Database["public"]["Enums"]["container_status"]
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "containers_pod_id_fkey"
+            columns: ["pod_id"]
+            isOneToOne: false
+            referencedRelation: "pods"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      logs: {
+        Row: {
+          container_id: string
+          created_at: string
+          id: string
+          level: Database["public"]["Enums"]["log_level"]
+          message: string
+          timestamp: string
+        }
+        Insert: {
+          container_id: string
+          created_at?: string
+          id?: string
+          level?: Database["public"]["Enums"]["log_level"]
+          message: string
+          timestamp?: string
+        }
+        Update: {
+          container_id?: string
+          created_at?: string
+          id?: string
+          level?: Database["public"]["Enums"]["log_level"]
+          message?: string
+          timestamp?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "logs_container_id_fkey"
+            columns: ["container_id"]
+            isOneToOne: false
+            referencedRelation: "containers"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      pods: {
+        Row: {
+          created_at: string
+          id: string
+          labels: Json | null
+          name: string
+          namespace: string
+          node_name: string | null
+          pod_ip: string | null
+          restarts: number | null
+          status: Database["public"]["Enums"]["pod_status"]
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          labels?: Json | null
+          name: string
+          namespace?: string
+          node_name?: string | null
+          pod_ip?: string | null
+          restarts?: number | null
+          status?: Database["public"]["Enums"]["pod_status"]
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          labels?: Json | null
+          name?: string
+          namespace?: string
+          node_name?: string | null
+          pod_ip?: string | null
+          restarts?: number | null
+          status?: Database["public"]["Enums"]["pod_status"]
+          updated_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
@@ -23,7 +152,16 @@ export type Database = {
       [_ in never]: never
     }
     Enums: {
-      [_ in never]: never
+      container_status: "Running" | "Waiting" | "Terminated"
+      log_level: "info" | "warn" | "error"
+      pod_status:
+        | "Running"
+        | "Pending"
+        | "Error"
+        | "OOMKilled"
+        | "CrashLoopBackOff"
+        | "Terminated"
+        | "Unknown"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -150,6 +288,18 @@ export type CompositeTypes<
 
 export const Constants = {
   public: {
-    Enums: {},
+    Enums: {
+      container_status: ["Running", "Waiting", "Terminated"],
+      log_level: ["info", "warn", "error"],
+      pod_status: [
+        "Running",
+        "Pending",
+        "Error",
+        "OOMKilled",
+        "CrashLoopBackOff",
+        "Terminated",
+        "Unknown",
+      ],
+    },
   },
 } as const
