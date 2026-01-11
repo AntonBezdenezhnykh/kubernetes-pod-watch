@@ -1,1 +1,7 @@
 project_id = "mtnhnrwzjcckfieyjxng"
+
+[functions.database]
+verify_jwt = false
+
+[functions.kubernetes-sync]
+verify_jwt = false
