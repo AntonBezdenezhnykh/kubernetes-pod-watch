@@ -1,5 +1,8 @@
 export type PodStatus = 'Running' | 'Pending' | 'Error' | 'OOMKilled' | 'CrashLoopBackOff' | 'Terminated' | 'Unknown';
 
+// Health status for quick visual identification
+export type HealthStatus = 'healthy' | 'warning' | 'error';
+
 export interface Container {
   id: string;
   name: string;
@@ -28,9 +31,38 @@ export interface Pod {
   restarts: number;
 }
 
+// Extended pod with computed health status
+export interface PodWithHealth extends Pod {
+  health: HealthStatus;
+  version: string | null;
+  hasLogErrors: boolean;
+}
+
+// Version group for comparing deployments
+export interface VersionGroup {
+  version: string;
+  pods: PodWithHealth[];
+  healthSummary: {
+    healthy: number;
+    warning: number;
+    error: number;
+  };
+  createdAt: string;
+}
+
 export interface LogEntry {
   id: string;
   timestamp: string;
   level: 'info' | 'warn' | 'error';
   message: string;
+}
+
+// Container status history for timeline
+export interface ContainerStatusEvent {
+  containerId: string;
+  containerName: string;
+  status: Container['status'];
+  ready: boolean;
+  timestamp: string;
+  reason?: string;
 }
