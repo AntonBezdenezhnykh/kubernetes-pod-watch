@@ -1,19 +1,22 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect } from 'react';
 import { supabase } from '@/integrations/supabase/client';
-import { Tables } from '@/integrations/supabase/types';
 import { Pod, Container, LogEntry } from '@/types/kubernetes';
-
-type DbPod = Tables<'pods'>;
-type DbContainer = Tables<'containers'>;
-type DbLog = Tables<'logs'>;
+import { 
+  fetchPodsAndContainers, 
+  fetchContainerLogs, 
+  getDatabaseConfig,
+  DbPod,
+  DbContainer,
+  DbLog
+} from '@/lib/database';
 
 // Transform database pod to frontend Pod type
 const transformPod = (dbPod: DbPod, containers: Container[]): Pod => ({
   id: dbPod.id,
   name: dbPod.name,
   namespace: dbPod.namespace,
-  status: dbPod.status,
+  status: dbPod.status as Pod['status'],
   nodeName: dbPod.node_name ?? '',
   podIP: dbPod.pod_ip ?? '',
   createdAt: dbPod.created_at,
@@ -27,7 +30,7 @@ const transformContainer = (dbContainer: DbContainer): Container => ({
   id: dbContainer.id,
   name: dbContainer.name,
   image: dbContainer.image,
-  status: dbContainer.status,
+  status: dbContainer.status as Container['status'],
   ready: dbContainer.ready ?? false,
   restartCount: dbContainer.restart_count ?? 0,
   startedAt: dbContainer.started_at ?? '',
@@ -44,14 +47,18 @@ const transformContainer = (dbContainer: DbContainer): Container => ({
 const transformLog = (dbLog: DbLog): LogEntry => ({
   id: dbLog.id,
   timestamp: dbLog.timestamp,
-  level: dbLog.level,
+  level: dbLog.level as LogEntry['level'],
   message: dbLog.message,
 });
 
 export const usePods = () => {
   const queryClient = useQueryClient();
+  const config = getDatabaseConfig();
 
   useEffect(() => {
+    // Only set up realtime subscriptions for Lovable Cloud (Supabase) database
+    if (config.useExternalDb) return;
+
     const channel = supabase
       .channel('pods-realtime')
       .on(
@@ -73,25 +80,14 @@ export const usePods = () => {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [queryClient]);
+  }, [queryClient, config.useExternalDb]);
 
   return useQuery({
     queryKey: ['pods'],
     queryFn: async (): Promise<Pod[]> => {
-      const { data: podsData, error: podsError } = await supabase
-        .from('pods')
-        .select('*')
-        .order('created_at', { ascending: false });
+      const { pods, containers } = await fetchPodsAndContainers();
 
-      if (podsError) throw podsError;
-
-      const { data: containersData, error: containersError } = await supabase
-        .from('containers')
-        .select('*');
-
-      if (containersError) throw containersError;
-
-      const containersByPodId = (containersData ?? []).reduce<Record<string, Container[]>>(
+      const containersByPodId = containers.reduce<Record<string, Container[]>>(
         (acc, container) => {
           const podId = container.pod_id;
           if (!acc[podId]) acc[podId] = [];
@@ -101,18 +97,21 @@ export const usePods = () => {
         {}
       );
 
-      return (podsData ?? []).map((pod) =>
+      return pods.map((pod) =>
         transformPod(pod, containersByPodId[pod.id] ?? [])
       );
     },
+    // Poll every 30 seconds when using external database (no realtime)
+    refetchInterval: config.useExternalDb ? 30000 : undefined,
   });
 };
 
 export const useContainerLogs = (containerId: string | null) => {
   const queryClient = useQueryClient();
+  const config = getDatabaseConfig();
 
   useEffect(() => {
-    if (!containerId) return;
+    if (!containerId || config.useExternalDb) return;
 
     const channel = supabase
       .channel(`logs-realtime-${containerId}`)
@@ -133,23 +132,17 @@ export const useContainerLogs = (containerId: string | null) => {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [containerId, queryClient]);
+  }, [containerId, queryClient, config.useExternalDb]);
 
   return useQuery({
     queryKey: ['logs', containerId],
     queryFn: async (): Promise<LogEntry[]> => {
       if (!containerId) return [];
-
-      const { data, error } = await supabase
-        .from('logs')
-        .select('*')
-        .eq('container_id', containerId)
-        .order('timestamp', { ascending: true });
-
-      if (error) throw error;
-
-      return (data ?? []).map(transformLog);
+      const logs = await fetchContainerLogs(containerId);
+      return logs.map(transformLog);
     },
     enabled: !!containerId,
+    // Poll every 10 seconds when using external database (no realtime)
+    refetchInterval: config.useExternalDb ? 10000 : undefined,
   });
 };
