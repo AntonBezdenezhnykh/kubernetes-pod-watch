@@ -1,6 +1,6 @@
 # Kubernetes Pod Monitor Dashboard
 
-A real-time Kubernetes cluster monitoring dashboard built with React, TypeScript, and Supabase. Monitor pod statuses, container health, and live logs from your Kubernetes clusters.
+A real-time Kubernetes cluster monitoring dashboard built with React, TypeScript, and PostgreSQL. Monitor pod statuses, container health, and live logs from your Kubernetes clusters.
 
 ## Features
 
@@ -10,12 +10,13 @@ A real-time Kubernetes cluster monitoring dashboard built with React, TypeScript
 - **Namespace Filtering**: Filter pods by namespace for focused monitoring
 - **Search**: Quickly find pods by name
 - **Status Overview**: Dashboard summary showing Running, Error, and Pending pod counts
+- **External Database Support**: Connect to any PostgreSQL database
 
 ## Technology Stack
 
 - **Frontend**: React 18, TypeScript, Vite
 - **Styling**: Tailwind CSS, shadcn/ui components
-- **Backend**: Supabase (PostgreSQL database with real-time subscriptions)
+- **Backend**: Lovable Cloud with PostgreSQL (or external PostgreSQL)
 - **State Management**: TanStack React Query
 
 ## Getting Started
@@ -23,7 +24,7 @@ A real-time Kubernetes cluster monitoring dashboard built with React, TypeScript
 ### Prerequisites
 
 - Node.js 18+ and npm
-- A Supabase project (provided via Lovable Cloud)
+- PostgreSQL database (Lovable Cloud or external)
 
 ### Installation
 
@@ -38,32 +39,164 @@ A real-time Kubernetes cluster monitoring dashboard built with React, TypeScript
    npm install
    ```
 
-3. Start the development server:
+3. Configure your database (see [Configuration](#configuration) section)
+
+4. Start the development server:
    ```bash
    npm run dev
    ```
 
-4. Open your browser to `http://localhost:5173`
+5. Open your browser to `http://localhost:5173`
 
 ## Configuration
 
-### Environment Variables
+### Database Configuration
 
-The application uses the following environment variables (automatically configured in Lovable):
+The application supports two database modes:
 
-| Variable | Description |
-|----------|-------------|
-| `VITE_SUPABASE_URL` | Your Supabase project URL |
-| `VITE_SUPABASE_PUBLISHABLE_KEY` | Supabase anonymous/public key |
-| `VITE_SUPABASE_PROJECT_ID` | Supabase project identifier |
+#### 1. Lovable Cloud Database (Default)
 
-These are pre-configured when using Lovable Cloud and should not be modified manually.
+When using Lovable Cloud, the database is automatically configured. No additional setup is required.
+
+#### 2. External PostgreSQL Database
+
+To connect to an external PostgreSQL database, set up the following configuration:
+
+##### Frontend Environment Variables
+
+Add to your `.env` file:
+
+```env
+VITE_USE_EXTERNAL_DB=true
+```
+
+##### Backend Secrets (Edge Function)
+
+Configure these secrets in your Lovable project settings → Secrets:
+
+| Secret | Required | Description | Example |
+|--------|----------|-------------|---------|
+| `DATABASE_URL` | Yes* | Full PostgreSQL connection string | `postgresql://user:pass@host:5432/dbname?sslmode=require` |
+| `DB_HOST` | Yes* | Database host | `my-db.example.com` |
+| `DB_PORT` | No | Database port (default: 5432) | `5432` |
+| `DB_NAME` | Yes* | Database name | `kubernetes_monitor` |
+| `DB_USER` | Yes* | Database username | `app_user` |
+| `DB_PASSWORD` | Yes* | Database password | `secure_password` |
+| `DB_SSL` | No | Enable SSL (default: true) | `true` or `false` |
+
+*Either provide `DATABASE_URL` OR all individual `DB_*` variables.
+
+##### Connection String Format
+
+```
+postgresql://[user]:[password]@[host]:[port]/[database]?sslmode=[mode]
+```
+
+SSL modes:
+- `require` - Require SSL connection (recommended for production)
+- `prefer` - Prefer SSL, fall back to non-SSL
+- `disable` - Disable SSL (not recommended)
+
+##### Example Configurations
+
+**Amazon RDS:**
+```env
+DATABASE_URL=postgresql://admin:password@mydb.abc123.us-east-1.rds.amazonaws.com:5432/kubernetes?sslmode=require
+```
+
+**Google Cloud SQL:**
+```env
+DATABASE_URL=postgresql://user:password@/kubernetes?host=/cloudsql/project:region:instance
+```
+
+**DigitalOcean Managed Database:**
+```env
+DATABASE_URL=postgresql://doadmin:password@db-postgresql-nyc1-12345-do-user-123456-0.b.db.ondigitalocean.com:25060/defaultdb?sslmode=require
+```
+
+**Local PostgreSQL:**
+```env
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=kubernetes_monitor
+DB_USER=postgres
+DB_PASSWORD=postgres
+DB_SSL=false
+```
+
+### Polling Configuration
+
+When using an external database, the app polls for updates since PostgreSQL doesn't support native pub/sub:
+
+- **Pods/Containers**: Refreshed every 30 seconds
+- **Logs**: Refreshed every 10 seconds
+
+With Lovable Cloud database, real-time updates are instant via Supabase Realtime.
 
 ## Database Schema
 
-The application uses three main tables:
+The application requires three tables. Create them in your external PostgreSQL database:
 
-### pods
+### Required Tables
+
+```sql
+-- Create enums
+CREATE TYPE pod_status AS ENUM ('Running', 'Pending', 'Failed', 'Succeeded', 'Unknown');
+CREATE TYPE container_status AS ENUM ('Running', 'Waiting', 'Terminated');
+CREATE TYPE log_level AS ENUM ('debug', 'info', 'warn', 'error');
+
+-- Create pods table
+CREATE TABLE pods (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL,
+  namespace TEXT NOT NULL DEFAULT 'default',
+  status pod_status NOT NULL DEFAULT 'Unknown',
+  node_name TEXT,
+  pod_ip TEXT,
+  labels JSONB DEFAULT '{}',
+  restarts INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Create containers table
+CREATE TABLE containers (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  pod_id UUID NOT NULL REFERENCES pods(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  image TEXT NOT NULL,
+  status container_status NOT NULL DEFAULT 'Waiting',
+  ready BOOLEAN DEFAULT false,
+  restart_count INTEGER DEFAULT 0,
+  started_at TIMESTAMPTZ,
+  last_state_reason TEXT,
+  last_state_exit_code INTEGER,
+  last_state_message TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Create logs table
+CREATE TABLE logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  container_id UUID NOT NULL REFERENCES containers(id) ON DELETE CASCADE,
+  timestamp TIMESTAMPTZ NOT NULL DEFAULT now(),
+  level log_level NOT NULL DEFAULT 'info',
+  message TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Create indexes for performance
+CREATE INDEX idx_pods_namespace ON pods(namespace);
+CREATE INDEX idx_pods_status ON pods(status);
+CREATE INDEX idx_containers_pod_id ON containers(pod_id);
+CREATE INDEX idx_logs_container_id ON logs(container_id);
+CREATE INDEX idx_logs_timestamp ON logs(timestamp);
+```
+
+### Table Descriptions
+
+#### pods
 Stores Kubernetes pod information.
 
 | Column | Type | Description |
@@ -79,7 +212,7 @@ Stores Kubernetes pod information.
 | `created_at` | TIMESTAMP | Creation timestamp |
 | `updated_at` | TIMESTAMP | Last update timestamp |
 
-### containers
+#### containers
 Stores container information for each pod.
 
 | Column | Type | Description |
@@ -96,7 +229,7 @@ Stores container information for each pod.
 | `last_state_exit_code` | INTEGER | Exit code from last termination |
 | `last_state_message` | TEXT | Message from last state change |
 
-### logs
+#### logs
 Stores container log entries.
 
 | Column | Type | Description |
@@ -111,7 +244,7 @@ Stores container log entries.
 
 ### Manual Data Entry
 
-You can insert data directly into the database using SQL:
+Insert data directly into the database using SQL:
 
 ```sql
 -- Insert a pod
@@ -145,22 +278,25 @@ VALUES (
 );
 ```
 
-### Automated Sync (Future Enhancement)
+### Automated Sync
 
-For production use, create an edge function or external service that:
+For production use, create a Kubernetes controller or CronJob that:
 1. Connects to your Kubernetes cluster API
-2. Periodically fetches pod/container status
-3. Syncs data to the Supabase database
+2. Watches for pod/container events
+3. Syncs data to the PostgreSQL database
 
 ## Real-time Updates
 
-The dashboard automatically receives updates when data changes in the database:
+### Lovable Cloud Database
+Instant updates via Supabase Realtime subscriptions:
+- Pod changes trigger immediate dashboard refresh
+- Container details update in real-time
+- New log entries appear instantly
 
-- **Pod changes**: Dashboard refreshes when pods are added, updated, or deleted
-- **Container changes**: Container details update in real-time
-- **Log streaming**: New log entries appear instantly in the log viewer
-
-This is powered by Supabase Realtime subscriptions.
+### External PostgreSQL Database
+Polling-based updates:
+- Pods/containers refresh every 30 seconds
+- Logs refresh every 10 seconds
 
 ## UI Components
 
@@ -178,7 +314,7 @@ Shows total pod count and status breakdown (Running, Error, Pending).
 - Container list with status indicators
 
 ### Log Viewer (Right Panel - Bottom)
-- Real-time log stream for selected container
+- Real-time/polling log stream for selected container
 - Log level filter (All, Debug, Info, Warn, Error)
 - Search within logs
 - Download logs as text file
@@ -227,7 +363,7 @@ The app uses CSS custom properties for theming. Modify `src/index.css` to custom
 
 ### Adding New Features
 
-1. **New pod fields**: Update the `pods` table schema and modify `src/types/kubernetes.ts`
+1. **New pod fields**: Update the database schema and modify `src/types/kubernetes.ts`
 2. **New filters**: Extend `src/components/PodList.tsx`
 3. **New visualizations**: Add components to `src/components/Dashboard.tsx`
 
@@ -236,17 +372,34 @@ The app uses CSS custom properties for theming. Modify `src/index.css` to custom
 ### No Data Showing
 - Verify database tables have data
 - Check browser console for errors
-- Ensure Supabase connection is configured
+- Ensure database connection is configured correctly
+- For external DB: verify secrets are set in Lovable project settings
 
-### Real-time Not Working
-- Verify Supabase Realtime is enabled for tables
+### Real-time/Polling Not Working
+- For Lovable Cloud: Verify Supabase Realtime is enabled for tables
+- For external DB: Check that polling is active (network tab shows periodic requests)
 - Check network connectivity
-- Review browser console for subscription errors
+- Review browser console for errors
+
+### Database Connection Failed
+- Verify connection string or individual credentials
+- Check that the database is accessible from Lovable Cloud (firewall/security groups)
+- Ensure SSL settings match your database requirements
+- Test connection locally first
 
 ### Slow Performance
 - Add database indexes for frequently queried columns
 - Implement pagination for large datasets
-- Consider Supabase instance size upgrade
+- Consider database instance size upgrade
+- For external DB: check network latency between Lovable Cloud and your database
+
+## Security Considerations
+
+- Never commit database credentials to version control
+- Use SSL for production database connections
+- Configure appropriate firewall rules for your database
+- Use read-only database credentials if write access isn't needed
+- Regularly rotate database passwords
 
 ## License
 
