@@ -278,12 +278,153 @@ VALUES (
 );
 ```
 
-### Automated Sync
+### Automated Kubernetes Sync
 
-For production use, create a Kubernetes controller or CronJob that:
-1. Connects to your Kubernetes cluster API
-2. Watches for pod/container events
-3. Syncs data to the PostgreSQL database
+The application includes a built-in edge function to sync data from a real Kubernetes cluster.
+
+#### Kubernetes Sync Configuration
+
+Configure these secrets in your Lovable project settings → Secrets:
+
+| Secret | Required | Description | Example |
+|--------|----------|-------------|---------|
+| `K8S_API_SERVER` | Yes | Kubernetes API server URL | `https://kubernetes.default.svc` or `https://my-cluster.example.com:6443` |
+| `K8S_TOKEN` | Yes | Service account token with pod read access | `eyJhbGciOiJSUzI1NiIs...` |
+| `K8S_NAMESPACE` | No | Specific namespace to monitor (empty = all namespaces) | `production` |
+| `K8S_CA_CERT` | No | Base64 encoded CA certificate | `LS0tLS1CRUdJTi...` |
+| `K8S_SKIP_TLS_VERIFY` | No | Skip TLS verification (not recommended) | `true` or `false` |
+
+#### Creating a Kubernetes Service Account
+
+Create a service account with pod read permissions:
+
+```yaml
+# service-account.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pod-monitor
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pod-reader
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/log"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pod-monitor-binding
+subjects:
+- kind: ServiceAccount
+  name: pod-monitor
+  namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: pod-reader
+  apiGroup: rbac.authorization.k8s.io
+```
+
+Apply the configuration:
+```bash
+kubectl apply -f service-account.yaml
+```
+
+Get the service account token:
+```bash
+# For Kubernetes 1.24+
+kubectl create token pod-monitor -n kube-system --duration=8760h
+
+# For older versions, get the secret token
+kubectl get secret $(kubectl get sa pod-monitor -n kube-system -o jsonpath='{.secrets[0].name}') -n kube-system -o jsonpath='{.data.token}' | base64 -d
+```
+
+#### Triggering a Sync
+
+Call the sync endpoint manually or set up a cron job:
+
+```bash
+# Manual sync
+curl -X POST "https://mtnhnrwzjcckfieyjxng.supabase.co/functions/v1/kubernetes-sync?action=sync"
+
+# Sync with cleanup (removes pods no longer in cluster)
+curl -X POST "https://mtnhnrwzjcckfieyjxng.supabase.co/functions/v1/kubernetes-sync?action=sync&cleanup=true"
+
+# Check configuration status
+curl "https://mtnhnrwzjcckfieyjxng.supabase.co/functions/v1/kubernetes-sync?action=status"
+```
+
+#### Setting Up Automated Sync
+
+For continuous monitoring, set up a cron job to call the sync endpoint periodically:
+
+**Using external cron service (e.g., cron-job.org, Uptime Robot):**
+- URL: `https://mtnhnrwzjcckfieyjxng.supabase.co/functions/v1/kubernetes-sync?action=sync&cleanup=true`
+- Method: POST
+- Interval: Every 1-5 minutes
+
+**Using Kubernetes CronJob:**
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: pod-monitor-sync
+spec:
+  schedule: "*/2 * * * *"  # Every 2 minutes
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: sync
+            image: curlimages/curl:latest
+            command:
+            - curl
+            - -X
+            - POST
+            - "https://mtnhnrwzjcckfieyjxng.supabase.co/functions/v1/kubernetes-sync?action=sync&cleanup=true"
+          restartPolicy: OnFailure
+```
+
+#### Sync Response
+
+The sync endpoint returns statistics about the operation:
+
+```json
+{
+  "success": true,
+  "timestamp": "2024-01-15T10:30:00.000Z",
+  "stats": {
+    "podsFetched": 25,
+    "podsUpserted": 25,
+    "containersUpserted": 42,
+    "podsDeleted": 3
+  }
+}
+```
+
+#### Data Mapping
+
+The sync function maps Kubernetes data to the database schema:
+
+| Kubernetes Field | Database Field |
+|------------------|----------------|
+| `pod.metadata.uid` | `pods.id` |
+| `pod.metadata.name` | `pods.name` |
+| `pod.metadata.namespace` | `pods.namespace` |
+| `pod.status.phase` + container states | `pods.status` |
+| `pod.spec.nodeName` | `pods.node_name` |
+| `pod.status.podIP` | `pods.pod_ip` |
+| `pod.metadata.labels` | `pods.labels` |
+| Sum of container restarts | `pods.restarts` |
+
+Container statuses are intelligently mapped:
+- `CrashLoopBackOff` and `OOMKilled` are detected from container states
+- Last state information is preserved for debugging
 
 ## Real-time Updates
 
