@@ -1,14 +1,11 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect } from 'react';
-import { supabase } from '@/integrations/supabase/client';
+import { useQuery } from '@tanstack/react-query';
 import { Pod, Container, LogEntry } from '@/types/kubernetes';
-import { 
-  fetchPodsAndContainers, 
-  fetchContainerLogs, 
-  getDatabaseConfig,
+import {
+  fetchPodsAndContainers,
+  fetchContainerLogs,
   DbPod,
   DbContainer,
-  DbLog
+  DbLog,
 } from '@/lib/database';
 
 // Transform database pod to frontend Pod type
@@ -52,36 +49,6 @@ const transformLog = (dbLog: DbLog): LogEntry => ({
 });
 
 export const usePods = () => {
-  const queryClient = useQueryClient();
-  const config = getDatabaseConfig();
-
-  useEffect(() => {
-    // Only set up realtime subscriptions for Lovable Cloud (Supabase) database
-    if (config.useExternalDb) return;
-
-    const channel = supabase
-      .channel('pods-realtime')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'pods' },
-        () => {
-          queryClient.invalidateQueries({ queryKey: ['pods'] });
-        }
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'containers' },
-        () => {
-          queryClient.invalidateQueries({ queryKey: ['pods'] });
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [queryClient, config.useExternalDb]);
-
   return useQuery({
     queryKey: ['pods'],
     queryFn: async (): Promise<Pod[]> => {
@@ -101,39 +68,11 @@ export const usePods = () => {
         transformPod(pod, containersByPodId[pod.id] ?? [])
       );
     },
-    // Poll every 30 seconds when using external database (no realtime)
-    refetchInterval: config.useExternalDb ? 30000 : undefined,
+    refetchInterval: 30000,
   });
 };
 
 export const useContainerLogs = (containerId: string | null) => {
-  const queryClient = useQueryClient();
-  const config = getDatabaseConfig();
-
-  useEffect(() => {
-    if (!containerId || config.useExternalDb) return;
-
-    const channel = supabase
-      .channel(`logs-realtime-${containerId}`)
-      .on(
-        'postgres_changes',
-        { 
-          event: '*', 
-          schema: 'public', 
-          table: 'logs',
-          filter: `container_id=eq.${containerId}`
-        },
-        () => {
-          queryClient.invalidateQueries({ queryKey: ['logs', containerId] });
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [containerId, queryClient, config.useExternalDb]);
-
   return useQuery({
     queryKey: ['logs', containerId],
     queryFn: async (): Promise<LogEntry[]> => {
@@ -142,7 +81,6 @@ export const useContainerLogs = (containerId: string | null) => {
       return logs.map(transformLog);
     },
     enabled: !!containerId,
-    // Poll every 10 seconds when using external database (no realtime)
-    refetchInterval: config.useExternalDb ? 10000 : undefined,
+    refetchInterval: 10000,
   });
 };

@@ -13,7 +13,7 @@ const k8sNamespace = Deno.env.get("K8S_NAMESPACE") || ""; // Empty = all namespa
 const k8sCaCert = Deno.env.get("K8S_CA_CERT"); // Optional: Base64 encoded CA cert
 const k8sSkipTlsVerify = Deno.env.get("K8S_SKIP_TLS_VERIFY") === "true";
 
-// Database configuration
+// External PostgreSQL configuration
 const databaseUrl = Deno.env.get("DATABASE_URL");
 const dbHost = Deno.env.get("DB_HOST");
 const dbPort = Deno.env.get("DB_PORT") || "5432";
@@ -21,10 +21,6 @@ const dbName = Deno.env.get("DB_NAME");
 const dbUser = Deno.env.get("DB_USER");
 const dbPassword = Deno.env.get("DB_PASSWORD");
 const dbSsl = Deno.env.get("DB_SSL") !== "false";
-
-// Supabase configuration (alternative to external DB)
-const supabaseUrl = Deno.env.get("SUPABASE_URL");
-const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
 interface K8sPod {
   metadata: {
@@ -67,13 +63,14 @@ interface K8sPodList {
 
 let pool: Pool | null = null;
 
-function getPool(): Pool | null {
+function getPool(): Pool {
   if (pool) return pool;
 
   if (databaseUrl) {
     pool = new Pool(databaseUrl, 3, true);
     return pool;
-  } else if (dbHost && dbName && dbUser && dbPassword) {
+  }
+  if (dbHost && dbName && dbUser && dbPassword) {
     pool = new Pool({
       hostname: dbHost,
       port: parseInt(dbPort),
@@ -85,7 +82,7 @@ function getPool(): Pool | null {
     return pool;
   }
 
-  return null;
+  throw new Error("Database configuration missing. Set DATABASE_URL or DB_HOST, DB_NAME, DB_USER, DB_PASSWORD.");
 }
 
 async function fetchK8sPods(): Promise<K8sPod[]> {
@@ -114,7 +111,6 @@ async function fetchK8sPods(): Promise<K8sPod[]> {
 }
 
 function mapPodStatus(phase: string, containerStatuses?: K8sPod["status"]["containerStatuses"]): string {
-  // Check for specific container issues
   if (containerStatuses) {
     for (const cs of containerStatuses) {
       if (cs.state.waiting?.reason === "CrashLoopBackOff") return "CrashLoopBackOff";
@@ -147,79 +143,8 @@ function mapContainerStatus(state: ContainerState): string {
   return "Waiting";
 }
 
-async function syncToSupabase(pods: K8sPod[]): Promise<{ podsUpserted: number; containersUpserted: number }> {
-  const { createClient } = await import("https://esm.sh/@supabase/supabase-js@2.39.0");
-  
-  const supabase = createClient(supabaseUrl!, supabaseServiceKey!);
-  
-  let podsUpserted = 0;
-  let containersUpserted = 0;
-
-  for (const pod of pods) {
-    const totalRestarts = pod.status.containerStatuses?.reduce((sum, cs) => sum + cs.restartCount, 0) || 0;
-
-    // Upsert pod
-    const { error: podError } = await supabase
-      .from("pods")
-      .upsert({
-        id: pod.metadata.uid,
-        name: pod.metadata.name,
-        namespace: pod.metadata.namespace,
-        status: mapPodStatus(pod.status.phase, pod.status.containerStatuses),
-        node_name: pod.spec.nodeName || "unassigned",
-        pod_ip: pod.status.podIP || null,
-        labels: pod.metadata.labels || {},
-        restarts: totalRestarts,
-        created_at: pod.metadata.creationTimestamp,
-        updated_at: new Date().toISOString(),
-      }, { onConflict: "id" });
-
-    if (podError) {
-      console.error(`Error upserting pod ${pod.metadata.name}:`, podError);
-      continue;
-    }
-    podsUpserted++;
-
-    // Upsert containers
-    if (pod.status.containerStatuses) {
-      for (const cs of pod.status.containerStatuses) {
-        const containerId = `${pod.metadata.uid}-${cs.name}`;
-        
-        const { error: containerError } = await supabase
-          .from("containers")
-          .upsert({
-            id: containerId,
-            pod_id: pod.metadata.uid,
-            name: cs.name,
-            image: cs.image,
-            status: mapContainerStatus(cs.state),
-            ready: cs.ready,
-            restart_count: cs.restartCount,
-            started_at: cs.state.running?.startedAt || null,
-            last_state_reason: cs.lastState?.terminated?.reason || cs.state.waiting?.reason || null,
-            last_state_exit_code: cs.lastState?.terminated?.exitCode || cs.state.terminated?.exitCode || null,
-            last_state_message: cs.lastState?.terminated?.message || cs.state.waiting?.message || cs.state.terminated?.message || null,
-            updated_at: new Date().toISOString(),
-          }, { onConflict: "id" });
-
-        if (containerError) {
-          console.error(`Error upserting container ${cs.name}:`, containerError);
-          continue;
-        }
-        containersUpserted++;
-      }
-    }
-  }
-
-  return { podsUpserted, containersUpserted };
-}
-
-async function syncToExternalDb(pods: K8sPod[]): Promise<{ podsUpserted: number; containersUpserted: number }> {
+async function syncToDb(pods: K8sPod[]): Promise<{ podsUpserted: number; containersUpserted: number }> {
   const dbPool = getPool();
-  if (!dbPool) {
-    throw new Error("Database configuration missing.");
-  }
-
   const connection = await dbPool.connect();
   let podsUpserted = 0;
   let containersUpserted = 0;
@@ -228,7 +153,6 @@ async function syncToExternalDb(pods: K8sPod[]): Promise<{ podsUpserted: number;
     for (const pod of pods) {
       const totalRestarts = pod.status.containerStatuses?.reduce((sum, cs) => sum + cs.restartCount, 0) || 0;
 
-      // Upsert pod
       await connection.queryObject(`
         INSERT INTO pods (id, name, namespace, status, node_name, pod_ip, labels, restarts, created_at, updated_at)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
@@ -255,7 +179,6 @@ async function syncToExternalDb(pods: K8sPod[]): Promise<{ podsUpserted: number;
       ]);
       podsUpserted++;
 
-      // Upsert containers
       if (pod.status.containerStatuses) {
         for (const cs of pod.status.containerStatuses) {
           const containerId = `${pod.metadata.uid}-${cs.name}`;
@@ -284,7 +207,7 @@ async function syncToExternalDb(pods: K8sPod[]): Promise<{ podsUpserted: number;
             cs.restartCount,
             cs.state.running?.startedAt || null,
             cs.lastState?.terminated?.reason || cs.state.waiting?.reason || null,
-            cs.lastState?.terminated?.exitCode || cs.state.terminated?.exitCode || null,
+            cs.lastState?.terminated?.exitCode ?? cs.state.terminated?.exitCode ?? null,
             cs.lastState?.terminated?.message || cs.state.waiting?.message || cs.state.terminated?.message || null,
             new Date().toISOString(),
           ]);
@@ -300,54 +223,25 @@ async function syncToExternalDb(pods: K8sPod[]): Promise<{ podsUpserted: number;
 }
 
 async function cleanupStalePods(currentPodIds: string[]): Promise<number> {
-  if (supabaseUrl && supabaseServiceKey) {
-    const { createClient } = await import("https://esm.sh/@supabase/supabase-js@2.39.0");
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+  if (currentPodIds.length === 0) return 0;
 
-    // Delete containers for stale pods first
-    const { error: containerError } = await supabase
-      .from("containers")
-      .delete()
-      .not("pod_id", "in", `(${currentPodIds.join(",")})`);
+  const placeholders = currentPodIds.map((_, i) => `$${i + 1}`).join(",");
+  const dbPool = getPool();
+  const connection = await dbPool.connect();
+  try {
+    await connection.queryObject(
+      `DELETE FROM containers WHERE pod_id NOT IN (${placeholders})`,
+      currentPodIds
+    );
 
-    if (containerError) {
-      console.error("Error cleaning up stale containers:", containerError);
-    }
+    const result = await connection.queryObject<{ id: string }>(
+      `DELETE FROM pods WHERE id NOT IN (${placeholders}) RETURNING id`,
+      currentPodIds
+    );
 
-    // Delete stale pods
-    const { data, error: podError } = await supabase
-      .from("pods")
-      .delete()
-      .not("id", "in", `(${currentPodIds.join(",")})`)
-      .select();
-
-    if (podError) {
-      console.error("Error cleaning up stale pods:", podError);
-      return 0;
-    }
-
-    return data?.length || 0;
-  } else {
-    const dbPool = getPool();
-    if (!dbPool) return 0;
-
-    const connection = await dbPool.connect();
-    try {
-      // Delete containers for stale pods
-      await connection.queryObject(`
-        DELETE FROM containers WHERE pod_id NOT IN (${currentPodIds.map((_, i) => `$${i + 1}`).join(",")})
-      `, currentPodIds);
-
-      // Delete stale pods
-      const result = await connection.queryObject(`
-        DELETE FROM pods WHERE id NOT IN (${currentPodIds.map((_, i) => `$${i + 1}`).join(",")})
-        RETURNING id
-      `, currentPodIds);
-
-      return result.rows.length;
-    } finally {
-      connection.release();
-    }
+    return result.rows?.length ?? 0;
+  } finally {
+    connection.release();
   }
 }
 
@@ -364,24 +258,15 @@ serve(async (req) => {
     switch (action) {
       case "sync": {
         console.log("Starting Kubernetes sync...");
-        
-        // Fetch pods from Kubernetes
+
         const pods = await fetchK8sPods();
         console.log(`Fetched ${pods.length} pods from Kubernetes`);
 
-        // Sync to database
-        let result: { podsUpserted: number; containersUpserted: number };
-        
-        if (supabaseUrl && supabaseServiceKey) {
-          result = await syncToSupabase(pods);
-        } else {
-          result = await syncToExternalDb(pods);
-        }
+        const result = await syncToDb(pods);
 
-        // Optionally cleanup stale pods
         let podsDeleted = 0;
         if (cleanup && pods.length > 0) {
-          const currentPodIds = pods.map(p => p.metadata.uid);
+          const currentPodIds = pods.map((p) => p.metadata.uid);
           podsDeleted = await cleanupStalePods(currentPodIds);
         }
 
@@ -397,7 +282,7 @@ serve(async (req) => {
         };
 
         console.log("Sync completed:", response.stats);
-        
+
         return new Response(JSON.stringify(response), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
@@ -405,7 +290,7 @@ serve(async (req) => {
 
       case "status": {
         const hasK8sConfig = !!(k8sApiServer && k8sToken);
-        const hasDbConfig = !!(supabaseUrl && supabaseServiceKey) || !!(databaseUrl || (dbHost && dbName && dbUser && dbPassword));
+        const hasDbConfig = !!(databaseUrl || (dbHost && dbName && dbUser && dbPassword));
 
         return new Response(JSON.stringify({
           kubernetes: {
@@ -415,7 +300,7 @@ serve(async (req) => {
           },
           database: {
             configured: hasDbConfig,
-            type: (supabaseUrl && supabaseServiceKey) ? "supabase" : "external",
+            type: "external",
           },
         }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -428,12 +313,12 @@ serve(async (req) => {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     console.error("Kubernetes sync error:", error);
-    
+
     return new Response(
       JSON.stringify({ error: errorMessage, success: false }),
-      { 
-        status: 500, 
-        headers: { ...corsHeaders, "Content-Type": "application/json" } 
+      {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
       }
     );
   }

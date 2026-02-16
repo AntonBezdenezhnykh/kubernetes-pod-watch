@@ -16,7 +16,7 @@ A real-time Kubernetes cluster monitoring dashboard built with React, TypeScript
 
 - **Frontend**: React 18, TypeScript, Vite
 - **Styling**: Tailwind CSS, shadcn/ui components
-- **Backend**: Lovable Cloud with PostgreSQL (or external PostgreSQL)
+- **Backend**: Edge functions (Supabase) + external PostgreSQL
 - **State Management**: TanStack React Query
 
 ## Getting Started
@@ -24,7 +24,7 @@ A real-time Kubernetes cluster monitoring dashboard built with React, TypeScript
 ### Prerequisites
 
 - Node.js 18+ and npm
-- PostgreSQL database (Lovable Cloud or external)
+- External PostgreSQL database
 
 ### Installation
 
@@ -52,27 +52,11 @@ A real-time Kubernetes cluster monitoring dashboard built with React, TypeScript
 
 ### Database Configuration
 
-The application supports two database modes:
+The application uses **external PostgreSQL only**. All data is read and written through edge functions that connect to your database.
 
-#### 1. Lovable Cloud Database (Default)
+#### Backend Secrets (Edge Function)
 
-When using Lovable Cloud, the database is automatically configured. No additional setup is required.
-
-#### 2. External PostgreSQL Database
-
-To connect to an external PostgreSQL database, set up the following configuration:
-
-##### Frontend Environment Variables
-
-Add to your `.env` file:
-
-```env
-VITE_USE_EXTERNAL_DB=true
-```
-
-##### Backend Secrets (Edge Function)
-
-Configure these secrets in your Lovable project settings → Secrets:
+Configure these secrets where your edge functions run (e.g. Supabase project settings → Secrets):
 
 | Secret | Required | Description | Example |
 |--------|----------|-------------|---------|
@@ -124,14 +108,12 @@ DB_PASSWORD=postgres
 DB_SSL=false
 ```
 
-### Polling Configuration
+### Polling
 
-When using an external database, the app polls for updates since PostgreSQL doesn't support native pub/sub:
+The app polls the database for updates:
 
 - **Pods/Containers**: Refreshed every 30 seconds
 - **Logs**: Refreshed every 10 seconds
-
-With Lovable Cloud database, real-time updates are instant via Supabase Realtime.
 
 ## Database Schema
 
@@ -284,7 +266,7 @@ The application includes a built-in edge function to sync data from a real Kuber
 
 #### Kubernetes Sync Configuration
 
-Configure these secrets in your Lovable project settings → Secrets:
+Configure these secrets where your edge functions run (e.g. Supabase project settings → Secrets):
 
 | Secret | Required | Description | Example |
 |--------|----------|-------------|---------|
@@ -426,16 +408,10 @@ Container statuses are intelligently mapped:
 - `CrashLoopBackOff` and `OOMKilled` are detected from container states
 - Last state information is preserved for debugging
 
-## Real-time Updates
+## Updates
 
-### Lovable Cloud Database
-Instant updates via Supabase Realtime subscriptions:
-- Pod changes trigger immediate dashboard refresh
-- Container details update in real-time
-- New log entries appear instantly
+Data is refreshed by polling the external PostgreSQL database:
 
-### External PostgreSQL Database
-Polling-based updates:
 - Pods/containers refresh every 30 seconds
 - Logs refresh every 10 seconds
 
@@ -513,26 +489,24 @@ The app uses CSS custom properties for theming. Modify `src/index.css` to custom
 ### No Data Showing
 - Verify database tables have data
 - Check browser console for errors
-- Ensure database connection is configured correctly
-- For external DB: verify secrets are set in Lovable project settings
+- Ensure edge function secrets (DATABASE_URL or DB_*) are set correctly
 
-### Real-time/Polling Not Working
-- For Lovable Cloud: Verify Supabase Realtime is enabled for tables
-- For external DB: Check that polling is active (network tab shows periodic requests)
-- Check network connectivity
+### Polling Not Working
+- Check that polling is active (network tab shows periodic requests to the database edge function)
+- Check network connectivity and CORS
 - Review browser console for errors
 
 ### Database Connection Failed
-- Verify connection string or individual credentials
-- Check that the database is accessible from Lovable Cloud (firewall/security groups)
+- Verify connection string or individual DB_* credentials in edge function secrets
+- Ensure the database is reachable from where edge functions run (firewall/security groups)
 - Ensure SSL settings match your database requirements
-- Test connection locally first
+- Test connection from the same environment as the edge functions
 
 ### Slow Performance
 - Add database indexes for frequently queried columns
 - Implement pagination for large datasets
 - Consider database instance size upgrade
-- For external DB: check network latency between Lovable Cloud and your database
+- Check network latency between the edge function runtime and your database
 
 ## Security Considerations
 
@@ -548,4 +522,4 @@ This project is private and proprietary.
 
 ## Support
 
-For issues and feature requests, please use the Lovable chat interface or create an issue in the repository.
+For issues and feature requests, please create an issue in the repository.
