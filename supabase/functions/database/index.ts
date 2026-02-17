@@ -9,11 +9,11 @@ const corsHeaders = {
 // Database connection configuration from environment variables
 const databaseUrl = Deno.env.get("DATABASE_URL");
 const dbHost = Deno.env.get("DB_HOST");
-const dbPort = Deno.env.get("DB_PORT") || "5432";
+const dbPort = Deno.env.get("DB_PORT") ?? "5432";
 const dbName = Deno.env.get("DB_NAME");
 const dbUser = Deno.env.get("DB_USER");
-const dbPassword = Deno.env.get("DB_PASSWORD");
-const dbSsl = Deno.env.get("DB_SSL") !== "false"; // Default to true
+const dbPassword = Deno.env.get("DB_PASSWORD") ?? "";
+const dbSsl = Deno.env.get("DB_SSL") !== "false";
 
 // Create connection pool
 let pool: Pool | null = null;
@@ -24,7 +24,7 @@ function getPool(): Pool {
   if (databaseUrl) {
     // Use connection string if provided
     pool = new Pool(databaseUrl, 3, true);
-  } else if (dbHost && dbName && dbUser && dbPassword) {
+  } else if (dbHost && dbName && dbUser) {
     // Use individual connection parameters
     pool = new Pool({
       hostname: dbHost,

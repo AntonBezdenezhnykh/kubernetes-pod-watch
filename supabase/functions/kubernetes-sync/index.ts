@@ -16,10 +16,10 @@ const k8sSkipTlsVerify = Deno.env.get("K8S_SKIP_TLS_VERIFY") === "true";
 // External PostgreSQL configuration
 const databaseUrl = Deno.env.get("DATABASE_URL");
 const dbHost = Deno.env.get("DB_HOST");
-const dbPort = Deno.env.get("DB_PORT") || "5432";
+const dbPort = Deno.env.get("DB_PORT") ?? "5432";
 const dbName = Deno.env.get("DB_NAME");
 const dbUser = Deno.env.get("DB_USER");
-const dbPassword = Deno.env.get("DB_PASSWORD");
+const dbPassword = Deno.env.get("DB_PASSWORD") ?? "";
 const dbSsl = Deno.env.get("DB_SSL") !== "false";
 
 interface K8sPod {
@@ -70,7 +70,7 @@ function getPool(): Pool {
     pool = new Pool(databaseUrl, 3, true);
     return pool;
   }
-  if (dbHost && dbName && dbUser && dbPassword) {
+  if (dbHost && dbName && dbUser) {
     pool = new Pool({
       hostname: dbHost,
       port: parseInt(dbPort),
@@ -82,7 +82,7 @@ function getPool(): Pool {
     return pool;
   }
 
-  throw new Error("Database configuration missing. Set DATABASE_URL or DB_HOST, DB_NAME, DB_USER, DB_PASSWORD.");
+  throw new Error("Database configuration missing. Set DATABASE_URL or DB_HOST, DB_NAME, DB_USER (DB_PASSWORD optional).");
 }
 
 async function fetchK8sPods(): Promise<K8sPod[]> {

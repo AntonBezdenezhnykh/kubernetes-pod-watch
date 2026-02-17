@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Supabase function secrets (contains DB credentials)
+supabase/functions/.env
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

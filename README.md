@@ -46,29 +46,31 @@ A real-time Kubernetes cluster monitoring dashboard built with React, TypeScript
    npm run dev
    ```
 
-5. Open your browser to `http://localhost:5173`
+5. Open your browser (typically `http://localhost:5173` or `http://localhost:8080`)
 
 ## Configuration
 
+All database connection parameters are configured via environment variables. No credentials or connection strings are hardcoded.
+
 ### Database Configuration
 
-The application uses **external PostgreSQL only**. All data is read and written through edge functions that connect to your database.
+The application uses **external PostgreSQL only**. All data is read and written through edge functions (or the local API server) that connect to your database.
 
-#### Backend Secrets (Edge Function)
+#### Environment Variables (Edge Function / Local API)
 
-Configure these secrets where your edge functions run (e.g. Supabase project settings → Secrets):
+Set these where your edge functions run (e.g. Supabase project settings → Secrets) or in `supabase/functions/.env` for local development:
 
-| Secret | Required | Description | Example |
-|--------|----------|-------------|---------|
-| `DATABASE_URL` | Yes* | Full PostgreSQL connection string | `postgresql://user:pass@host:5432/dbname?sslmode=require` |
+| Variable | Required | Description | Example |
+|----------|----------|-------------|---------|
+| `DATABASE_URL` | Yes* | Full PostgreSQL connection string | `postgresql://user:pass@host:5432/dbname?sslmode=disable` |
 | `DB_HOST` | Yes* | Database host | `my-db.example.com` |
 | `DB_PORT` | No | Database port (default: 5432) | `5432` |
 | `DB_NAME` | Yes* | Database name | `kubernetes_monitor` |
 | `DB_USER` | Yes* | Database username | `app_user` |
-| `DB_PASSWORD` | Yes* | Database password | `secure_password` |
+| `DB_PASSWORD` | No | Database password (empty for trust auth) | `secure_password` |
 | `DB_SSL` | No | Enable SSL (default: true) | `true` or `false` |
 
-*Either provide `DATABASE_URL` OR all individual `DB_*` variables.
+*Either provide `DATABASE_URL` OR all individual `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`.
 
 ##### Connection String Format
 
@@ -98,15 +100,49 @@ DATABASE_URL=postgresql://user:password@/kubernetes?host=/cloudsql/project:regio
 DATABASE_URL=postgresql://doadmin:password@db-postgresql-nyc1-12345-do-user-123456-0.b.db.ondigitalocean.com:25060/defaultdb?sslmode=require
 ```
 
-**Local PostgreSQL:**
+**Local PostgreSQL (no password):**
+```env
+DATABASE_URL=postgresql://postgres@localhost:5432/postgres?sslmode=disable
+```
+
+Or with individual variables:
 ```env
 DB_HOST=localhost
 DB_PORT=5432
-DB_NAME=kubernetes_monitor
+DB_NAME=postgres
 DB_USER=postgres
-DB_PASSWORD=postgres
+DB_PASSWORD=
 DB_SSL=false
 ```
+
+### Local Development (without Docker/Supabase CLI)
+
+Run the local API server that mimics the database edge function:
+
+```bash
+# Terminal 1: Start local API (requires DATABASE_URL)
+export DATABASE_URL=postgresql://postgres@localhost:5432/postgres?sslmode=disable
+npm run dev:api
+
+# Terminal 2: Start frontend
+# Set VITE_SUPABASE_URL=http://localhost:54321 in .env.local to point at local API
+npm run dev
+```
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DATABASE_URL` | Yes | PostgreSQL connection string |
+| `API_PORT` | No | Local API server port (default: 54321) |
+
+#### Frontend (Vite)
+
+For local development, create `.env.local`:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `VITE_SUPABASE_URL` | Yes | API URL (e.g. `http://localhost:54321` for local API, or your Supabase project URL) |
+| `VITE_SUPABASE_PUBLISHABLE_KEY` | Yes | Anon/public key for API auth |
+| `VITE_SUPABASE_PROJECT_ID` | No | Project identifier |
 
 ### Polling
 
@@ -117,15 +153,25 @@ The app polls the database for updates:
 
 ## Database Schema
 
-The application requires three tables. Create them in your external PostgreSQL database:
+The application requires three tables. Create them in your external PostgreSQL database using the migration file or the SQL below.
+
+**Apply schema using environment variables:**
+```bash
+psql "$DATABASE_URL" -f supabase/migrations/ext_local_schema.sql
+```
+
+Or with individual variables:
+```bash
+psql -h "$DB_HOST" -p "${DB_PORT:-5432}" -U "$DB_USER" -d "$DB_NAME" -f supabase/migrations/ext_local_schema.sql
+```
 
 ### Required Tables
 
 ```sql
--- Create enums
-CREATE TYPE pod_status AS ENUM ('Running', 'Pending', 'Failed', 'Succeeded', 'Unknown');
+-- Create enums (match ext_local_schema.sql)
+CREATE TYPE pod_status AS ENUM ('Running', 'Pending', 'Error', 'OOMKilled', 'CrashLoopBackOff', 'Terminated', 'Unknown');
 CREATE TYPE container_status AS ENUM ('Running', 'Waiting', 'Terminated');
-CREATE TYPE log_level AS ENUM ('debug', 'info', 'warn', 'error');
+CREATE TYPE log_level AS ENUM ('info', 'warn', 'error');
 
 -- Create pods table
 CREATE TABLE pods (
@@ -186,7 +232,7 @@ Stores Kubernetes pod information.
 | `id` | UUID | Primary key |
 | `name` | TEXT | Pod name |
 | `namespace` | TEXT | Kubernetes namespace (default: 'default') |
-| `status` | ENUM | Pod status (Running, Pending, Failed, Succeeded, Unknown) |
+| `status` | ENUM | Pod status (Running, Pending, Error, OOMKilled, CrashLoopBackOff, Terminated, Unknown) |
 | `node_name` | TEXT | Node where pod is scheduled |
 | `pod_ip` | TEXT | Pod IP address |
 | `labels` | JSONB | Pod labels as key-value pairs |
@@ -219,7 +265,7 @@ Stores container log entries.
 | `id` | UUID | Primary key |
 | `container_id` | UUID | Reference to parent container |
 | `timestamp` | TIMESTAMP | Log entry timestamp |
-| `level` | ENUM | Log level (debug, info, warn, error) |
+| `level` | ENUM | Log level (info, warn, error) |
 | `message` | TEXT | Log message content |
 
 ## Populating Data
@@ -327,17 +373,17 @@ kubectl get secret $(kubectl get sa pod-monitor -n kube-system -o jsonpath='{.se
 
 #### Triggering a Sync
 
-Call the sync endpoint manually or set up a cron job:
+Call the sync endpoint manually or set up a cron job. Set `SUPABASE_URL` to your project URL (e.g. `https://<project-ref>.supabase.co`):
 
 ```bash
 # Manual sync
-curl -X POST "https://mtnhnrwzjcckfieyjxng.supabase.co/functions/v1/kubernetes-sync?action=sync"
+curl -X POST "$SUPABASE_URL/functions/v1/kubernetes-sync?action=sync"
 
 # Sync with cleanup (removes pods no longer in cluster)
-curl -X POST "https://mtnhnrwzjcckfieyjxng.supabase.co/functions/v1/kubernetes-sync?action=sync&cleanup=true"
+curl -X POST "$SUPABASE_URL/functions/v1/kubernetes-sync?action=sync&cleanup=true"
 
 # Check configuration status
-curl "https://mtnhnrwzjcckfieyjxng.supabase.co/functions/v1/kubernetes-sync?action=status"
+curl "$SUPABASE_URL/functions/v1/kubernetes-sync?action=status"
 ```
 
 #### Setting Up Automated Sync
@@ -345,7 +391,7 @@ curl "https://mtnhnrwzjcckfieyjxng.supabase.co/functions/v1/kubernetes-sync?acti
 For continuous monitoring, set up a cron job to call the sync endpoint periodically:
 
 **Using external cron service (e.g., cron-job.org, Uptime Robot):**
-- URL: `https://mtnhnrwzjcckfieyjxng.supabase.co/functions/v1/kubernetes-sync?action=sync&cleanup=true`
+- URL: `$SUPABASE_URL/functions/v1/kubernetes-sync?action=sync&cleanup=true`
 - Method: POST
 - Interval: Every 1-5 minutes
 
@@ -368,7 +414,7 @@ spec:
             - curl
             - -X
             - POST
-            - "https://mtnhnrwzjcckfieyjxng.supabase.co/functions/v1/kubernetes-sync?action=sync&cleanup=true"
+            - "https://<your-project>.supabase.co/functions/v1/kubernetes-sync?action=sync&cleanup=true"  # Replace with your Supabase URL
           restartPolicy: OnFailure
 ```
 
