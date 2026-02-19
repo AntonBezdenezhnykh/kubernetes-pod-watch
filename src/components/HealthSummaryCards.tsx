@@ -58,7 +58,6 @@ export const HealthSummaryCards = ({
       bgClass: 'bg-[hsl(var(--status-error)/0.1)]',
       textClass: 'text-[hsl(var(--status-error))]',
       borderClass: 'border-[hsl(var(--status-error)/0.3)]',
-      pulse: errorCount > 0,
     },
   ];
 
@@ -76,17 +75,11 @@ export const HealthSummaryCards = ({
             activeFilter === card.key && card.key === 'healthy' && 'ring-[hsl(var(--status-ready))]',
             activeFilter === card.key && card.key === 'warning' && 'ring-[hsl(var(--status-warning))]',
             activeFilter === card.key && card.key === 'error' && 'ring-[hsl(var(--status-error))]',
-            activeFilter === card.key && card.key === 'all' && 'ring-primary',
-            card.pulse && 'animate-pulse'
+            activeFilter === card.key && card.key === 'all' && 'ring-primary'
           )}
         >
           <div className="flex items-center justify-between mb-2">
             <card.icon className={cn('w-5 h-5', card.textClass)} />
-            {card.count > 0 && card.key === 'error' && (
-              <span className="text-xs px-2 py-0.5 rounded-full bg-[hsl(var(--status-error))] text-white font-medium">
-                Needs attention
-              </span>
-            )}
           </div>
           <div className={cn('text-3xl font-bold', card.textClass)}>{card.count}</div>
           <div className="text-sm text-muted-foreground">{card.label}</div>
