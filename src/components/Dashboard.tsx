@@ -67,6 +67,7 @@ export const Dashboard = () => {
   // Quick stats for header
   const errorCount = podsWithHealth.filter((p) => p.health === 'error').length;
   const warningCount = podsWithHealth.filter((p) => p.health === 'warning').length;
+  const healthyCount = podsWithHealth.filter((p) => p.health === 'healthy').length;
 
   if (isLoading) {
     return (
@@ -109,6 +110,7 @@ export const Dashboard = () => {
                 <h1 className="text-xl font-bold">Kubernetes Monitor</h1>
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                   <span>{podsWithHealth.length} active pods</span>
+                  <span>• {healthyCount} deployed healthy</span>
                   {errorCount > 0 && (
                     <span className="flex items-center gap-1 text-[hsl(var(--status-error))]">
                       • {errorCount} error{errorCount !== 1 ? 's' : ''}
@@ -185,6 +187,10 @@ export const Dashboard = () => {
           )}>
             {viewMode === 'grid' ? (
               <div className="space-y-4">
+                <div className="text-sm text-muted-foreground">
+                  Sorted by priority: <span className="text-[hsl(var(--status-error))]">errors</span>,{' '}
+                  <span className="text-[hsl(var(--status-warning))]">warnings</span>, initializing, then healthy.
+                </div>
                 {displayPods.length === 0 ? (
                   <div className="text-center py-12 text-muted-foreground">
                     <Layers className="w-16 h-16 mx-auto mb-4 opacity-30" />

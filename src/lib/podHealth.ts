@@ -1,27 +1,86 @@
-import { Pod, PodWithHealth, HealthStatus, VersionGroup, LogEntry } from '@/types/kubernetes';
+import {
+  Pod,
+  PodWithHealth,
+  HealthStatus,
+  VersionGroup,
+  LogEntry,
+  Container,
+  ContainerSeverity,
+} from '@/types/kubernetes';
+
+const INITIALIZING_REASONS = new Set(['ContainerCreating', 'PodInitializing']);
+const ERROR_REASONS = new Set([
+  'CrashLoopBackOff',
+  'OOMKilled',
+  'Error',
+  'ImagePullBackOff',
+  'ErrImagePull',
+  'CreateContainerConfigError',
+  'InvalidImageName',
+  'RunContainerError',
+]);
+
+export const classifyContainerSeverity = (
+  container: Container
+): {
+  severity: ContainerSeverity;
+  label: string;
+  details?: string;
+  score: number;
+} => {
+  const reason = container.lastState?.reason ?? '';
+  const isInitializing = INITIALIZING_REASONS.has(reason) || reason.startsWith('Init:');
+
+  if (container.status === 'Terminated' || ERROR_REASONS.has(reason) || container.restartCount >= 5) {
+    return {
+      severity: 'error',
+      label: reason || 'Container failure',
+      details: container.lastState?.message,
+      score: 100 + container.restartCount,
+    };
+  }
+
+  if (container.status === 'Waiting' && isInitializing) {
+    return {
+      severity: 'initializing',
+      label: reason || 'Initializing',
+      details: container.lastState?.message,
+      score: 20,
+    };
+  }
+
+  if (container.status === 'Waiting' || !container.ready || container.restartCount > 0) {
+    return {
+      severity: 'warning',
+      label: reason || (container.status === 'Waiting' ? 'Waiting' : 'Not ready'),
+      details: container.lastState?.message,
+      score: 40 + Math.min(container.restartCount, 10),
+    };
+  }
+
+  return {
+    severity: 'healthy',
+    label: 'Running',
+    score: 0,
+  };
+};
 
 // Compute health status based on pod and container states
 export const computePodHealth = (
   pod: Pod,
   containerLogs: Map<string, LogEntry[]>
-): HealthStatus => {
+): { health: HealthStatus; attentionScore: number; attentionReason: string | null } => {
   // Error conditions - immediate attention required
   const errorStatuses: Pod['status'][] = ['Error', 'OOMKilled', 'CrashLoopBackOff'];
   if (errorStatuses.includes(pod.status)) {
-    return 'error';
+    return { health: 'error', attentionScore: 200, attentionReason: pod.status };
   }
 
-  // Check containers for issues
-  const hasUnhealthyContainers = pod.containers.some(
-    (c) => !c.ready || c.status === 'Terminated' || c.status === 'Waiting'
+  const containerAssessments = pod.containers.map(classifyContainerSeverity);
+  const maxAssessment = containerAssessments.reduce(
+    (max, item) => (item.score > max.score ? item : max),
+    { severity: 'healthy' as ContainerSeverity, label: '', score: 0 }
   );
-  
-  // High restart count indicates instability
-  const hasHighRestarts = pod.containers.some((c) => c.restartCount >= 3);
-  
-  if (hasUnhealthyContainers || hasHighRestarts) {
-    return 'error';
-  }
 
   // Check for error logs in running containers
   const hasErrorLogs = pod.containers.some((c) => {
@@ -29,16 +88,36 @@ export const computePodHealth = (
     return logs.some((log) => log.level === 'error');
   });
 
+  if (maxAssessment.severity === 'error') {
+    return {
+      health: 'error',
+      attentionScore: maxAssessment.score,
+      attentionReason: maxAssessment.label,
+    };
+  }
+
   if (hasErrorLogs) {
-    return 'warning';
+    return { health: 'warning', attentionScore: 60, attentionReason: 'Error logs detected' };
   }
 
   // Pending status is a warning
-  if (pod.status === 'Pending') {
-    return 'warning';
+  if (pod.status === 'Pending' || maxAssessment.severity === 'warning') {
+    return {
+      health: 'warning',
+      attentionScore: Math.max(maxAssessment.score, 35),
+      attentionReason: maxAssessment.label || (pod.status === 'Pending' ? 'Pending scheduling' : null),
+    };
   }
 
-  return 'healthy';
+  if (maxAssessment.severity === 'initializing') {
+    return {
+      health: 'warning',
+      attentionScore: maxAssessment.score,
+      attentionReason: maxAssessment.label,
+    };
+  }
+
+  return { health: 'healthy', attentionScore: 0, attentionReason: null };
 };
 
 // Extract version from Kubernetes labels
@@ -67,7 +146,7 @@ export const enrichPodWithHealth = (
   pod: Pod,
   containerLogs: Map<string, LogEntry[]>
 ): PodWithHealth => {
-  const health = computePodHealth(pod, containerLogs);
+  const computed = computePodHealth(pod, containerLogs);
   const version = extractVersion(pod.labels);
   const hasLogErrors = pod.containers.some((c) => {
     const logs = containerLogs.get(c.id) ?? [];
@@ -76,9 +155,11 @@ export const enrichPodWithHealth = (
 
   return {
     ...pod,
-    health,
+    health: computed.health,
     version,
     hasLogErrors,
+    attentionScore: computed.attentionScore,
+    attentionReason: computed.attentionReason,
   };
 };
 
@@ -129,6 +210,8 @@ export const sortPodsByHealth = (pods: PodWithHealth[]): PodWithHealth[] => {
   return [...pods].sort((a, b) => {
     const healthDiff = priority[a.health] - priority[b.health];
     if (healthDiff !== 0) return healthDiff;
+    const attentionDiff = b.attentionScore - a.attentionScore;
+    if (attentionDiff !== 0) return attentionDiff;
     // Within same health, sort by most recent
     return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
   });

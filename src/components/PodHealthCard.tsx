@@ -1,6 +1,7 @@
 import { PodWithHealth, Container } from '@/types/kubernetes';
 import { cn } from '@/lib/utils';
 import { formatDistanceToNow } from 'date-fns';
+import { classifyContainerSeverity } from '@/lib/podHealth';
 import {
   CheckCircle,
   AlertTriangle,
@@ -50,9 +51,14 @@ export const PodHealthCard = ({ pod, isSelected, onSelect }: PodHealthCardProps)
   const totalRestarts = pod.containers.reduce((sum, c) => sum + c.restartCount, 0);
 
   // Find the most problematic container
-  const problematicContainer = pod.containers.find(
-    (c) => !c.ready || c.status !== 'Running' || c.restartCount >= 3
-  );
+  const problematicContainer = [...pod.containers]
+    .map((container) => ({ container, assessment: classifyContainerSeverity(container) }))
+    .sort((a, b) => b.assessment.score - a.assessment.score)[0];
+  const problematicSeverity = problematicContainer?.assessment.severity;
+  const issueTone =
+    problematicSeverity === 'error'
+      ? 'bg-[hsl(var(--status-error)/0.1)] text-[hsl(var(--status-error))]'
+      : 'bg-[hsl(var(--status-warning)/0.1)] text-[hsl(var(--status-warning))]';
 
   return (
     <button
@@ -117,15 +123,19 @@ export const PodHealthCard = ({ pod, isSelected, onSelect }: PodHealthCardProps)
       </div>
 
       {/* Show problematic container hint */}
-      {problematicContainer && (
-        <div className="mt-2 p-2 rounded-lg bg-[hsl(var(--status-error)/0.1)] text-xs">
-          <span className="font-medium text-[hsl(var(--status-error))]">
-            {problematicContainer.name}:
+      {problematicContainer && problematicContainer.assessment.score > 0 && (
+        <div className={cn('mt-2 p-2 rounded-lg text-xs', issueTone)}>
+          <span className="font-medium">
+            {problematicContainer.container.name}:
           </span>{' '}
           <span className="text-muted-foreground">
-            {problematicContainer.status}
-            {problematicContainer.lastState?.reason && ` - ${problematicContainer.lastState.reason}`}
+            {problematicContainer.assessment.label}
           </span>
+        </div>
+      )}
+      {pod.attentionReason && (
+        <div className="mt-2 text-xs text-muted-foreground">
+          Priority: <span className="font-medium">{pod.attentionReason}</span>
         </div>
       )}
     </button>

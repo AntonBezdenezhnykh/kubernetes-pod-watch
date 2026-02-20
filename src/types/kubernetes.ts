@@ -2,6 +2,7 @@ export type PodStatus = 'Running' | 'Pending' | 'Error' | 'OOMKilled' | 'CrashLo
 
 // Health status for quick visual identification
 export type HealthStatus = 'healthy' | 'warning' | 'error';
+export type ContainerSeverity = 'healthy' | 'initializing' | 'warning' | 'error';
 
 export interface Container {
   id: string;
@@ -36,6 +37,8 @@ export interface PodWithHealth extends Pod {
   health: HealthStatus;
   version: string | null;
   hasLogErrors: boolean;
+  attentionScore: number;
+  attentionReason: string | null;
 }
 
 // Version group for comparing deployments

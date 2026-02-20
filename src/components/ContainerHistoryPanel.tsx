@@ -1,6 +1,7 @@
 import { Container, PodWithHealth } from '@/types/kubernetes';
 import { cn } from '@/lib/utils';
-import { format, formatDistanceToNow } from 'date-fns';
+import { formatDistanceToNow } from 'date-fns';
+import { classifyContainerSeverity } from '@/lib/podHealth';
 import {
   Container as ContainerIcon,
   CheckCircle,
@@ -23,18 +24,17 @@ export const ContainerHistoryPanel = ({
   selectedContainerId,
   onSelectContainer,
 }: ContainerHistoryPanelProps) => {
-  // Sort containers: unhealthy first, then by restart count
+  // Sort containers by severity and restart count
   const sortedContainers = [...pod.containers].sort((a, b) => {
-    if (a.ready !== b.ready) return a.ready ? 1 : -1;
-    if (a.status !== b.status) {
-      const priority = { Terminated: 0, Waiting: 1, Running: 2 };
-      return priority[a.status] - priority[b.status];
-    }
+    const aScore = classifyContainerSeverity(a).score;
+    const bScore = classifyContainerSeverity(b).score;
+    if (aScore !== bScore) return bScore - aScore;
     return b.restartCount - a.restartCount;
   });
 
   const getStatusConfig = (container: Container) => {
-    if (!container.ready || container.status === 'Terminated') {
+    const classification = classifyContainerSeverity(container);
+    if (classification.severity === 'error') {
       return {
         bgClass: 'bg-[hsl(var(--status-error)/0.1)]',
         borderClass: 'border-[hsl(var(--status-error)/0.3)]',
@@ -42,20 +42,20 @@ export const ContainerHistoryPanel = ({
         icon: XCircle,
       };
     }
-    if (container.status === 'Waiting') {
-      return {
-        bgClass: 'bg-[hsl(var(--status-warning)/0.1)]',
-        borderClass: 'border-[hsl(var(--status-warning)/0.3)]',
-        iconClass: 'text-[hsl(var(--status-warning))]',
-        icon: Clock,
-      };
-    }
-    if (container.restartCount >= 3) {
+    if (classification.severity === 'warning') {
       return {
         bgClass: 'bg-[hsl(var(--status-warning)/0.1)]',
         borderClass: 'border-[hsl(var(--status-warning)/0.3)]',
         iconClass: 'text-[hsl(var(--status-warning))]',
         icon: AlertTriangle,
+      };
+    }
+    if (classification.severity === 'initializing') {
+      return {
+        bgClass: 'bg-[hsl(var(--status-pending)/0.08)]',
+        borderClass: 'border-[hsl(var(--status-pending)/0.3)]',
+        iconClass: 'text-[hsl(var(--status-pending))]',
+        icon: Clock,
       };
     }
     return {
@@ -99,6 +99,11 @@ export const ContainerHistoryPanel = ({
           const config = getStatusConfig(container);
           const StatusIcon = config.icon;
           const isSelected = selectedContainerId === container.id;
+          const classification = classifyContainerSeverity(container);
+          const statusLabel =
+            classification.severity === 'initializing'
+              ? 'Initializing'
+              : container.status;
 
           return (
             <button
@@ -118,14 +123,15 @@ export const ContainerHistoryPanel = ({
                   <span className="font-medium">{container.name}</span>
                 </div>
                 <span
-                  className={cn(
-                    'text-xs px-2 py-0.5 rounded-full font-medium',
-                    container.status === 'Running' && 'bg-[hsl(var(--status-ready)/0.15)] text-[hsl(var(--status-ready))]',
-                    container.status === 'Waiting' && 'bg-[hsl(var(--status-pending)/0.15)] text-[hsl(var(--status-pending))]',
-                    container.status === 'Terminated' && 'bg-[hsl(var(--status-error)/0.15)] text-[hsl(var(--status-error))]'
-                  )}
-                >
-                  {container.status}
+                    className={cn(
+                      'text-xs px-2 py-0.5 rounded-full font-medium',
+                      classification.severity === 'healthy' && 'bg-[hsl(var(--status-ready)/0.15)] text-[hsl(var(--status-ready))]',
+                      classification.severity === 'initializing' && 'bg-[hsl(var(--status-pending)/0.15)] text-[hsl(var(--status-pending))]',
+                      classification.severity === 'warning' && 'bg-[hsl(var(--status-warning)/0.15)] text-[hsl(var(--status-warning))]',
+                      classification.severity === 'error' && 'bg-[hsl(var(--status-error)/0.15)] text-[hsl(var(--status-error))]'
+                    )}
+                  >
+                  {statusLabel}
                 </span>
               </div>
 
@@ -158,8 +164,22 @@ export const ContainerHistoryPanel = ({
 
               {/* Last state error */}
               {container.lastState && (
-                <div className="mt-3 p-2.5 rounded-lg bg-[hsl(var(--status-error)/0.15)] text-xs">
-                  <div className="font-semibold text-[hsl(var(--status-error))] flex items-center gap-1.5">
+                <div
+                  className={cn(
+                    'mt-3 p-2.5 rounded-lg text-xs',
+                    classification.severity === 'error'
+                      ? 'bg-[hsl(var(--status-error)/0.15)]'
+                      : 'bg-[hsl(var(--status-warning)/0.12)]'
+                  )}
+                >
+                  <div
+                    className={cn(
+                      'font-semibold flex items-center gap-1.5',
+                      classification.severity === 'error'
+                        ? 'text-[hsl(var(--status-error))]'
+                        : 'text-[hsl(var(--status-warning))]'
+                    )}
+                  >
                     <AlertTriangle className="w-3.5 h-3.5" />
                     {container.lastState.reason}
                     {container.lastState.exitCode !== undefined && (
