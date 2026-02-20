@@ -2,14 +2,17 @@
 
 const getBaseUrl = () => {
   const url = import.meta.env.VITE_SUPABASE_URL;
-  if (!url) throw new Error('VITE_SUPABASE_URL is required');
-  return `${url}/functions/v1/database`;
+  if (!url) return '/functions/v1/database';
+  return `${url.replace(/\/$/, '')}/functions/v1/database`;
 };
 
-const getAuthHeaders = () => ({
-  'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-  'Content-Type': 'application/json',
-});
+const getAuthHeaders = () => {
+  const publishableKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+  return {
+    ...(publishableKey ? { 'Authorization': `Bearer ${publishableKey}` } : {}),
+    'Content-Type': 'application/json',
+  };
+};
 
 // API response types matching edge function
 export interface DbPod {
