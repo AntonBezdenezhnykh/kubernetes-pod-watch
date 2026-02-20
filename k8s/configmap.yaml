@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pod-watch-config
+  namespace: kubernetes-pod-watch
+data:
+  # Frontend configuration
+  VITE_SUPABASE_URL: ""
+  VITE_SUPABASE_PUBLISHABLE_KEY: "dummy-key-for-local-dev"
+  VITE_SUPABASE_PROJECT_ID: "kubernetes-pod-watch"
+  
+  # Database configuration
+  DB_HOST: "host.docker.internal"
+  DB_PORT: "5432"
+  DB_NAME: "kubernetes_monitor"
+  DB_USER: "postgres"
+  DB_SSL: "false"
+  
+  # API configuration
+  API_PORT: "54321"

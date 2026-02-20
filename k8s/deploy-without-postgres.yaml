@@ -1,0 +1,575 @@
+# Deployment manifests for Kubernetes Pod Watch without PostgreSQL
+# Uses external PostgreSQL database on localhost:5432
+
+# 1. Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubernetes-pod-watch
+  labels:
+    app: kubernetes-pod-watch
+
+---
+# 2. ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pod-watch-config
+  namespace: kubernetes-pod-watch
+data:
+  # Frontend configuration
+  VITE_SUPABASE_URL: "http://backend-service:54321"
+  VITE_SUPABASE_PUBLISHABLE_KEY: "dummy-key-for-local-dev"
+  VITE_SUPABASE_PROJECT_ID: "kubernetes-pod-watch"
+  
+  # Database configuration
+  DB_HOST: "host.docker.internal"
+  DB_PORT: "5432"
+  DB_NAME: "kubernetes_monitor"
+  DB_USER: "postgres"
+  DB_SSL: "false"
+  
+  # API configuration
+  API_PORT: "54321"
+
+---
+# 3. Secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pod-watch-secrets
+  namespace: kubernetes-pod-watch
+type: Opaque
+data:
+  # Base64 encoded values
+  # Empty password for postgres user
+  DB_PASSWORD: ""
+  DATABASE_URL: cG9zdGdyZXNxbDovL3Bvc3RncmVzQGhvc3QuZG9ja2VyLmludGVybmFsOjU0MzIva3ViZXJuZXRlc19tb25pdG9yP3NzbG1vZGU9ZGlzYWJsZQ==  # "postgresql://postgres@host.docker.internal:5432/kubernetes_monitor?sslmode=disable" in base64
+
+---
+# 4. RBAC
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pod-monitor
+  namespace: kubernetes-pod-watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pod-reader
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/log"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pod-monitor-binding
+subjects:
+- kind: ServiceAccount
+  name: pod-monitor
+  namespace: kubernetes-pod-watch
+roleRef:
+  kind: ClusterRole
+  name: pod-reader
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# 5. Backend Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: kubernetes-pod-watch
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+      - name: backend
+        image: node:18-alpine
+        ports:
+        - containerPort: 54321
+        env:
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: pod-watch-secrets
+              key: DATABASE_URL
+        - name: API_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: pod-watch-config
+              key: API_PORT
+        command: ["/bin/sh"]
+        args:
+          - -c
+          - |
+            apk add --no-cache curl &&
+            cd /app &&
+            npm install -g pg &&
+            cat > server.mjs << 'EOF'
+            #!/usr/bin/env node
+            import { createServer } from 'node:http';
+            import pg from 'pg';
+            
+            const { Pool } = pg;
+            const DB_URL = process.env.DATABASE_URL;
+            const PORT = parseInt(process.env.API_PORT || '54321', 10);
+            
+            const pool = new Pool({ connectionString: DB_URL });
+            
+            const corsHeaders = {
+              'Access-Control-Allow-Origin': '*',
+              'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+              'Content-Type': 'application/json',
+            };
+            
+            const server = createServer(async (req, res) => {
+              if (req.method === 'OPTIONS') {
+                res.writeHead(204, corsHeaders);
+                res.end();
+                return;
+              }
+            
+              const url = new URL(req.url || '/', `http://localhost:${PORT}`);
+              if (url.pathname !== '/functions/v1/database') {
+                res.writeHead(404, corsHeaders);
+                res.end(JSON.stringify({ error: 'Not found' }));
+                return;
+              }
+            
+              const action = url.searchParams.get('action');
+            
+              try {
+                let result;
+            
+                switch (action) {
+                  case 'getPods': {
+                    const podsRes = await pool.query(\`
+                      SELECT id, name, namespace, status, node_name, pod_ip, labels, restarts, created_at, updated_at
+                      FROM pods ORDER BY created_at DESC
+                    \`);
+                    const containersRes = await pool.query(\`
+                      SELECT id, pod_id, name, image, status, ready, restart_count, started_at,
+                             last_state_reason, last_state_exit_code, last_state_message, created_at, updated_at
+                      FROM containers
+                    \`);
+                    result = { pods: podsRes.rows, containers: containersRes.rows };
+                    break;
+                  }
+                  case 'getLogs': {
+                    const containerId = url.searchParams.get('containerId');
+                    if (!containerId) throw new Error('containerId is required');
+                    const logsRes = await pool.query(
+                      \`SELECT id, container_id, timestamp, level, message, created_at
+                       FROM logs WHERE container_id = \$1 ORDER BY timestamp ASC\`,
+                      [containerId]
+                    );
+                    result = { logs: logsRes.rows };
+                    break;
+                  }
+                  case 'health': {
+                    await pool.query('SELECT 1');
+                    result = { status: 'healthy', timestamp: new Date().toISOString() };
+                    break;
+                  }
+                  default:
+                    throw new Error(\`Unknown action: \${action}\`);
+                }
+            
+                res.writeHead(200, corsHeaders);
+                res.end(JSON.stringify(result));
+              } catch (err) {
+                console.error('Database error:', err);
+                res.writeHead(500, corsHeaders);
+                res.end(JSON.stringify({ error: err.message || 'Unknown error' }));
+              }
+            });
+            
+            server.listen(PORT, () => {
+              console.log(\`Backend API: http://localhost:\${PORT}/functions/v1/database\`);
+            });
+            EOF
+            node server.mjs
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        livenessProbe:
+          httpGet:
+            path: /functions/v1/database?action=health
+            port: 54321
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /functions/v1/database?action=health
+            port: 54321
+          initialDelaySeconds: 5
+          periodSeconds: 5
+
+---
+# 6. Backend Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-service
+  namespace: kubernetes-pod-watch
+spec:
+  selector:
+    app: backend
+  ports:
+  - port: 54321
+    targetPort: 54321
+  type: ClusterIP
+
+---
+# 7. Frontend Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: kubernetes-pod-watch
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+      - name: frontend
+        image: kubernetes-pod-watch:latest
+        ports:
+        - containerPort: 80
+        env:
+        - name: VITE_SUPABASE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: pod-watch-config
+              key: VITE_SUPABASE_URL
+        - name: VITE_SUPABASE_PUBLISHABLE_KEY
+          valueFrom:
+            configMapKeyRef:
+              name: pod-watch-config
+              key: VITE_SUPABASE_PUBLISHABLE_KEY
+        - name: VITE_SUPABASE_PROJECT_ID
+          valueFrom:
+            configMapKeyRef:
+              name: pod-watch-config
+              key: VITE_SUPABASE_PROJECT_ID
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5
+
+---
+# 8. Frontend Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-service
+  namespace: kubernetes-pod-watch
+spec:
+  selector:
+    app: frontend
+  ports:
+  - port: 80
+    targetPort: 80
+  type: LoadBalancer
+
+---
+# 9. Data Collection CronJob
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: kubernetes-data-collector
+  namespace: kubernetes-pod-watch
+spec:
+  schedule: "*/2 * * * *"  # Every 2 minutes
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: pod-monitor
+          restartPolicy: OnFailure
+          containers:
+          - name: data-collector
+            image: bitnami/kubectl:latest
+            env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: pod-watch-secrets
+                  key: DATABASE_URL
+            command: ["/bin/sh"]
+            args:
+              - -c
+              - |
+                # Install dependencies
+                apk add --no-cache postgresql-client nodejs npm
+                
+                # Create data collection script
+                cat > collect-data.mjs << 'EOF'
+                #!/usr/bin/env node
+                import { execSync } from 'child_process';
+                import pg from 'pg';
+                
+                const { Pool } = pg;
+                const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+                
+                async function collectKubernetesData() {
+                  try {
+                    // Get all pods
+                    const podOutput = execSync('kubectl get pods --all-namespaces -o json', { encoding: 'utf8' });
+                    const podData = JSON.parse(podOutput);
+                    
+                    // Clear existing data
+                    await pool.query('DELETE FROM logs');
+                    await pool.query('DELETE FROM containers');
+                    await pool.query('DELETE FROM pods');
+                    
+                    // Process each pod
+                    for (const pod of podData.items) {
+                      const podId = pod.metadata.uid || pod.metadata.name;
+                      const podStatus = getPodStatus(pod);
+                      
+                      // Insert pod
+                      await pool.query(`
+                        INSERT INTO pods (id, name, namespace, status, node_name, pod_ip, labels, restarts)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                        ON CONFLICT (id) DO UPDATE SET
+                          status = EXCLUDED.status,
+                          node_name = EXCLUDED.node_name,
+                          pod_ip = EXCLUDED.pod_ip,
+                          labels = EXCLUDED.labels,
+                          restarts = EXCLUDED.restarts,
+                          updated_at = now()
+                      `, [
+                        podId,
+                        pod.metadata.name,
+                        pod.metadata.namespace || 'default',
+                        podStatus,
+                        pod.spec.nodeName,
+                        pod.status.podIP,
+                        JSON.stringify(pod.metadata.labels || {}),
+                        getTotalRestarts(pod)
+                      ]);
+                      
+                      // Process containers
+                      if (pod.spec.containers) {
+                        for (const container of pod.spec.containers) {
+                          const containerStatus = getContainerStatus(pod, container.name);
+                          const containerId = `${podId}-${container.name}`;
+                          
+                          await pool.query(`
+                            INSERT INTO containers (id, pod_id, name, image, status, ready, restart_count, started_at, last_state_reason, last_state_exit_code, last_state_message)
+                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                            ON CONFLICT (id) DO UPDATE SET
+                              status = EXCLUDED.status,
+                              ready = EXCLUDED.ready,
+                              restart_count = EXCLUDED.restart_count,
+                              started_at = EXCLUDED.startedAt,
+                              last_state_reason = EXCLUDED.last_stateReason,
+                              last_state_exit_code = EXCLUDED.lastStateExitCode,
+                              last_state_message = EXCLUDED.lastStateMessage,
+                              updated_at = now()
+                          `, [
+                            containerId,
+                            podId,
+                            container.name,
+                            container.image,
+                            containerStatus.status,
+                            containerStatus.ready,
+                            containerStatus.restartCount,
+                            containerStatus.startedAt,
+                            containerStatus.lastStateReason,
+                            containerStatus.lastStateExitCode,
+                            containerStatus.lastStateMessage
+                          ]);
+                          
+                          // Generate sample logs
+                          await generateSampleLogs(containerId, container.name);
+                        }
+                      }
+                    }
+                    
+                    console.log('Data collection completed successfully');
+                  } catch (error) {
+                    console.error('Error collecting data:', error);
+                    throw error;
+                  } finally {
+                    await pool.end();
+                  }
+                }
+                
+                function getPodStatus(pod) {
+                  const phase = pod.status.phase;
+                  const containerStates = pod.status.containerStatuses || [];
+                  
+                  // Check for specific error conditions
+                  for (const containerStatus of containerStates) {
+                    if (containerStatus.state && containerStatus.state.waiting) {
+                      const reason = containerStatus.state.waiting.reason;
+                      if (reason === 'CrashLoopBackOff') return 'CrashLoopBackOff';
+                      if (reason === 'OOMKilling') return 'OOMKilled';
+                    }
+                  }
+                  
+                  // Map standard phases
+                  switch (phase) {
+                    case 'Running': return 'Running';
+                    case 'Pending': return 'Pending';
+                    case 'Succeeded': return 'Terminated';
+                    case 'Failed': return 'Error';
+                    default: return 'Unknown';
+                  }
+                }
+                
+                function getContainerStatus(pod, containerName) {
+                  const containerStatuses = pod.status.containerStatuses || [];
+                  const containerStatus = containerStatuses.find(cs => cs.name === containerName);
+                  
+                  if (!containerStatus) {
+                    return { status: 'Waiting', ready: false, restartCount: 0 };
+                  }
+                  
+                  let status = 'Waiting';
+                  let ready = false;
+                  let restartCount = containerStatus.restartCount || 0;
+                  let startedAt = null;
+                  let lastStateReason = null;
+                  let lastStateExitCode = null;
+                  let lastStateMessage = null;
+                  
+                  if (containerStatus.state) {
+                    if (containerStatus.state.running) {
+                      status = 'Running';
+                      ready = containerStatus.ready || false;
+                      startedAt = containerStatus.state.running.startedAt;
+                    } else if (containerStatus.state.waiting) {
+                      status = 'Waiting';
+                      lastStateReason = containerStatus.state.waiting.reason;
+                      lastStateMessage = containerStatus.state.waiting.message;
+                    } else if (containerStatus.state.terminated) {
+                      status = 'Terminated';
+                      lastStateExitCode = containerStatus.state.terminated.exitCode;
+                      lastStateReason = containerStatus.state.terminated.reason;
+                      lastStateMessage = containerStatus.state.terminated.message;
+                    }
+                  }
+                  
+                  return {
+                    status,
+                    ready,
+                    restartCount,
+                    startedAt,
+                    lastStateReason,
+                    lastStateExitCode,
+                    lastStateMessage
+                  };
+                }
+                
+                function getTotalRestarts(pod) {
+                  const containerStatuses = pod.status.containerStatuses || [];
+                  return containerStatuses.reduce((total, cs) => total + (cs.restartCount || 0), 0);
+                }
+                
+                async function generateSampleLogs(containerId, containerName) {
+                  const logLevels = ['info', 'warn', 'error'];
+                  const sampleMessages = [
+                    'Application started successfully',
+                    'Processing request',
+                    'Database connection established',
+                    'Cache cleared',
+                    'Health check passed',
+                    'Configuration loaded',
+                    'Service ready',
+                    'Request completed',
+                    'Memory usage: 45%',
+                    'CPU usage: 12%'
+                  ];
+                  
+                  const errorMessages = [
+                    'Connection timeout',
+                    'Database query failed',
+                    'Memory threshold exceeded',
+                    'Service unavailable'
+                  ];
+                  
+                  const warnMessages = [
+                    'Retrying connection',
+                    'Slow query detected',
+                    'Cache miss',
+                    'Rate limit approaching'
+                  ];
+                  
+                  // Generate 5-10 random log entries
+                  const numLogs = Math.floor(Math.random() * 6) + 5;
+                  const now = new Date();
+                  
+                  for (let i = 0; i < numLogs; i++) {
+                    const timestamp = new Date(now.getTime() - (i * 60000)); // 1 minute apart
+                    let level, message;
+                    
+                    const rand = Math.random();
+                    if (rand < 0.1) {
+                      level = 'error';
+                      message = errorMessages[Math.floor(Math.random() * errorMessages.length)];
+                    } else if (rand < 0.2) {
+                      level = 'warn';
+                      message = warnMessages[Math.floor(Math.random() * warnMessages.length)];
+                    } else {
+                      level = 'info';
+                      message = sampleMessages[Math.floor(Math.random() * sampleMessages.length)];
+                    }
+                    
+                    await pool.query(`
+                      INSERT INTO logs (container_id, timestamp, level, message)
+                      VALUES ($1, $2, $3, $4)
+                    `, [containerId, timestamp, level, message]);
+                  }
+                }
+                
+                collectKubernetesData().catch(console.error);
+                EOF
+                
+                # Run the data collection script
+                node collect-data.mjs
+            resources:
+              requests:
+                memory: "128Mi"
+                cpu: "100m"
+              limits:
+                memory: "256Mi"
+                cpu: "200m"

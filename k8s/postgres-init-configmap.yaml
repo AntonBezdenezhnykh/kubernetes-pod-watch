@@ -1,0 +1,98 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init-scripts
+  namespace: kubernetes-pod-watch
+data:
+  01-init-schema.sql: |
+    -- Schema for external/local PostgreSQL (no supabase_realtime - use when connecting to plain Postgres)
+    
+    -- Create enum for pod status
+    CREATE TYPE public.pod_status AS ENUM ('Running', 'Pending', 'Error', 'OOMKilled', 'CrashLoopBackOff', 'Terminated', 'Unknown');
+    
+    -- Create enum for container status
+    CREATE TYPE public.container_status AS ENUM ('Running', 'Waiting', 'Terminated');
+    
+    -- Create enum for log level
+    CREATE TYPE public.log_level AS ENUM ('info', 'warn', 'error');
+    
+    -- Create pods table
+    CREATE TABLE IF NOT EXISTS public.pods (
+        id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+        name TEXT NOT NULL,
+        namespace TEXT NOT NULL DEFAULT 'default',
+        status pod_status NOT NULL DEFAULT 'Unknown',
+        node_name TEXT,
+        pod_ip TEXT,
+        labels JSONB DEFAULT '{}',
+        restarts INTEGER DEFAULT 0,
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+        updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+    );
+    
+    -- Create containers table
+    CREATE TABLE IF NOT EXISTS public.containers (
+        id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+        pod_id UUID REFERENCES public.pods(id) ON DELETE CASCADE NOT NULL,
+        name TEXT NOT NULL,
+        image TEXT NOT NULL,
+        status container_status NOT NULL DEFAULT 'Waiting',
+        ready BOOLEAN DEFAULT false,
+        restart_count INTEGER DEFAULT 0,
+        started_at TIMESTAMP WITH TIME ZONE,
+        last_state_reason TEXT,
+        last_state_exit_code INTEGER,
+        last_state_message TEXT,
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+        updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+    );
+    
+    -- Create logs table
+    CREATE TABLE IF NOT EXISTS public.logs (
+        id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+        container_id UUID REFERENCES public.containers(id) ON DELETE CASCADE NOT NULL,
+        timestamp TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+        level log_level NOT NULL DEFAULT 'info',
+        message TEXT NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+    );
+    
+    -- Enable Row Level Security
+    ALTER TABLE public.pods ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE public.containers ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE public.logs ENABLE ROW LEVEL SECURITY;
+    
+    -- Create public read policies (for monitoring dashboard)
+    DROP POLICY IF EXISTS "Allow public read access to pods" ON public.pods;
+    CREATE POLICY "Allow public read access to pods" ON public.pods FOR SELECT USING (true);
+    
+    DROP POLICY IF EXISTS "Allow public read access to containers" ON public.containers;
+    CREATE POLICY "Allow public read access to containers" ON public.containers FOR SELECT USING (true);
+    
+    DROP POLICY IF EXISTS "Allow public read access to logs" ON public.logs;
+    CREATE POLICY "Allow public read access to logs" ON public.logs FOR SELECT USING (true);
+    
+    -- Create function to update timestamps
+    CREATE OR REPLACE FUNCTION public.update_updated_at_column()
+    RETURNS TRIGGER AS $$
+    BEGIN
+        NEW.updated_at = now();
+        RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql SET search_path = public;
+    
+    -- Create triggers for automatic timestamp updates
+    DROP TRIGGER IF EXISTS update_pods_updated_at ON public.pods;
+    CREATE TRIGGER update_pods_updated_at
+    BEFORE UPDATE ON public.pods FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+    
+    DROP TRIGGER IF EXISTS update_containers_updated_at ON public.containers;
+    CREATE TRIGGER update_containers_updated_at
+    BEFORE UPDATE ON public.containers FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+    
+    -- Create indexes for better query performance
+    CREATE INDEX IF NOT EXISTS idx_pods_namespace ON public.pods(namespace);
+    CREATE INDEX IF NOT EXISTS idx_pods_status ON public.pods(status);
+    CREATE INDEX IF NOT EXISTS idx_containers_pod_id ON public.containers(pod_id);
+    CREATE INDEX IF NOT EXISTS idx_logs_container_id ON public.logs(container_id);
+    CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON public.logs(timestamp DESC);

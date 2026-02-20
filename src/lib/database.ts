@@ -2,7 +2,8 @@
 
 const getBaseUrl = () => {
   const url = import.meta.env.VITE_SUPABASE_URL;
-  if (!url) throw new Error('VITE_SUPABASE_URL is required');
+  // Use relative URL for production (when VITE_SUPABASE_URL is empty)
+  if (!url) return '/functions/v1/database';
   return `${url}/functions/v1/database`;
 };
 

@@ -1,0 +1,263 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: kubernetes-data-collector
+  namespace: kubernetes-pod-watch
+spec:
+  schedule: "*/2 * * * *"  # Every 2 minutes
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: pod-monitor
+          restartPolicy: OnFailure
+          containers:
+          - name: data-collector
+            image: bitnami/kubectl:latest
+            env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: pod-watch-secrets
+                  key: DATABASE_URL
+            command: ["/bin/sh"]
+            args:
+              - -c
+              - |
+                # Install dependencies
+                apk add --no-cache postgresql-client nodejs npm
+                
+                # Create data collection script
+                cat > collect-data.mjs << 'EOF'
+                #!/usr/bin/env node
+                import { execSync } from 'child_process';
+                import pg from 'pg';
+                
+                const { Pool } = pg;
+                const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+                
+                async function collectKubernetesData() {
+                  try {
+                    // Get all pods
+                    const podOutput = execSync('kubectl get pods --all-namespaces -o json', { encoding: 'utf8' });
+                    const podData = JSON.parse(podOutput);
+                    
+                    // Clear existing data
+                    await pool.query('DELETE FROM logs');
+                    await pool.query('DELETE FROM containers');
+                    await pool.query('DELETE FROM pods');
+                    
+                    // Process each pod
+                    for (const pod of podData.items) {
+                      const podId = pod.metadata.uid || pod.metadata.name;
+                      const podStatus = getPodStatus(pod);
+                      
+                      // Insert pod
+                      await pool.query(`
+                        INSERT INTO pods (id, name, namespace, status, node_name, pod_ip, labels, restarts)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                        ON CONFLICT (id) DO UPDATE SET
+                          status = EXCLUDED.status,
+                          node_name = EXCLUDED.node_name,
+                          pod_ip = EXCLUDED.pod_ip,
+                          labels = EXCLUDED.labels,
+                          restarts = EXCLUDED.restarts,
+                          updated_at = now()
+                      `, [
+                        podId,
+                        pod.metadata.name,
+                        pod.metadata.namespace || 'default',
+                        podStatus,
+                        pod.spec.nodeName,
+                        pod.status.podIP,
+                        JSON.stringify(pod.metadata.labels || {}),
+                        getTotalRestarts(pod)
+                      ]);
+                      
+                      // Process containers
+                      if (pod.spec.containers) {
+                        for (const container of pod.spec.containers) {
+                          const containerStatus = getContainerStatus(pod, container.name);
+                          const containerId = `${podId}-${container.name}`;
+                          
+                          await pool.query(`
+                            INSERT INTO containers (id, pod_id, name, image, status, ready, restart_count, started_at, last_state_reason, last_state_exit_code, last_state_message)
+                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                            ON CONFLICT (id) DO UPDATE SET
+                              status = EXCLUDED.status,
+                              ready = EXCLUDED.ready,
+                              restart_count = EXCLUDED.restart_count,
+                              started_at = EXCLUDED.started_at,
+                              last_state_reason = EXCLUDED.last_state_reason,
+                              last_state_exit_code = EXCLUDED.last_state_exit_code,
+                              last_state_message = EXCLUDED.last_state_message,
+                              updated_at = now()
+                          `, [
+                            containerId,
+                            podId,
+                            container.name,
+                            container.image,
+                            containerStatus.status,
+                            containerStatus.ready,
+                            containerStatus.restartCount,
+                            containerStatus.startedAt,
+                            containerStatus.lastStateReason,
+                            containerStatus.lastStateExitCode,
+                            containerStatus.lastStateMessage
+                          ]);
+                          
+                          // Generate sample logs
+                          await generateSampleLogs(containerId, container.name);
+                        }
+                      }
+                    }
+                    
+                    console.log('Data collection completed successfully');
+                  } catch (error) {
+                    console.error('Error collecting data:', error);
+                    throw error;
+                  } finally {
+                    await pool.end();
+                  }
+                }
+                
+                function getPodStatus(pod) {
+                  const phase = pod.status.phase;
+                  const containerStates = pod.status.containerStatuses || [];
+                  
+                  // Check for specific error conditions
+                  for (const containerStatus of containerStates) {
+                    if (containerStatus.state && containerStatus.state.waiting) {
+                      const reason = containerStatus.state.waiting.reason;
+                      if (reason === 'CrashLoopBackOff') return 'CrashLoopBackOff';
+                      if (reason === 'OOMKilling') return 'OOMKilled';
+                    }
+                  }
+                  
+                  // Map standard phases
+                  switch (phase) {
+                    case 'Running': return 'Running';
+                    case 'Pending': return 'Pending';
+                    case 'Succeeded': return 'Terminated';
+                    case 'Failed': return 'Error';
+                    default: return 'Unknown';
+                  }
+                }
+                
+                function getContainerStatus(pod, containerName) {
+                  const containerStatuses = pod.status.containerStatuses || [];
+                  const containerStatus = containerStatuses.find(cs => cs.name === containerName);
+                  
+                  if (!containerStatus) {
+                    return { status: 'Waiting', ready: false, restartCount: 0 };
+                  }
+                  
+                  let status = 'Waiting';
+                  let ready = false;
+                  let restartCount = containerStatus.restartCount || 0;
+                  let startedAt = null;
+                  let lastStateReason = null;
+                  let lastStateExitCode = null;
+                  let lastStateMessage = null;
+                  
+                  if (containerStatus.state) {
+                    if (containerStatus.state.running) {
+                      status = 'Running';
+                      ready = containerStatus.ready || false;
+                      startedAt = containerStatus.state.running.startedAt;
+                    } else if (containerStatus.state.waiting) {
+                      status = 'Waiting';
+                      lastStateReason = containerStatus.state.waiting.reason;
+                      lastStateMessage = containerStatus.state.waiting.message;
+                    } else if (containerStatus.state.terminated) {
+                      status = 'Terminated';
+                      lastStateExitCode = containerStatus.state.terminated.exitCode;
+                      lastStateReason = containerStatus.state.terminated.reason;
+                      lastStateMessage = containerStatus.state.terminated.message;
+                    }
+                  }
+                  
+                  return {
+                    status,
+                    ready,
+                    restartCount,
+                    startedAt,
+                    lastStateReason,
+                    lastStateExitCode,
+                    lastStateMessage
+                  };
+                }
+                
+                function getTotalRestarts(pod) {
+                  const containerStatuses = pod.status.containerStatuses || [];
+                  return containerStatuses.reduce((total, cs) => total + (cs.restartCount || 0), 0);
+                }
+                
+                async function generateSampleLogs(containerId, containerName) {
+                  const logLevels = ['info', 'warn', 'error'];
+                  const sampleMessages = [
+                    'Application started successfully',
+                    'Processing request',
+                    'Database connection established',
+                    'Cache cleared',
+                    'Health check passed',
+                    'Configuration loaded',
+                    'Service ready',
+                    'Request completed',
+                    'Memory usage: 45%',
+                    'CPU usage: 12%'
+                  ];
+                  
+                  const errorMessages = [
+                    'Connection timeout',
+                    'Database query failed',
+                    'Memory threshold exceeded',
+                    'Service unavailable'
+                  ];
+                  
+                  const warnMessages = [
+                    'Retrying connection',
+                    'Slow query detected',
+                    'Cache miss',
+                    'Rate limit approaching'
+                  ];
+                  
+                  // Generate 5-10 random log entries
+                  const numLogs = Math.floor(Math.random() * 6) + 5;
+                  const now = new Date();
+                  
+                  for (let i = 0; i < numLogs; i++) {
+                    const timestamp = new Date(now.getTime() - (i * 60000)); // 1 minute apart
+                    let level, message;
+                    
+                    const rand = Math.random();
+                    if (rand < 0.1) {
+                      level = 'error';
+                      message = errorMessages[Math.floor(Math.random() * errorMessages.length)];
+                    } else if (rand < 0.2) {
+                      level = 'warn';
+                      message = warnMessages[Math.floor(Math.random() * warnMessages.length)];
+                    } else {
+                      level = 'info';
+                      message = sampleMessages[Math.floor(Math.random() * sampleMessages.length)];
+                    }
+                    
+                    await pool.query(`
+                      INSERT INTO logs (container_id, timestamp, level, message)
+                      VALUES ($1, $2, $3, $4)
+                    `, [containerId, timestamp, level, message]);
+                  }
+                }
+                
+                collectKubernetesData().catch(console.error);
+                EOF
+                
+                # Run the data collection script
+                node collect-data.mjs
+            resources:
+              requests:
+                memory: "128Mi"
+                cpu: "100m"
+              limits:
+                memory: "256Mi"
+                cpu: "200m"
