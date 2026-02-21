@@ -11,6 +11,8 @@ node_modules
 dist
 dist-ssr
 *.local
+k8s/production/.env.production
+k8s/production/deploy.rendered.yaml
 
 # Supabase function secrets (contains DB credentials)
 supabase/functions/.env

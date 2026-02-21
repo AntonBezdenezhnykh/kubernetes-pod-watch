@@ -40,7 +40,7 @@ metadata:
   namespace: pod-watch
   labels:
     app.kubernetes.io/name: pod-watch
-    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/version: "1.0.3"
 spec:
   replicas: 1
   selector:
@@ -51,12 +51,12 @@ spec:
       labels:
         app: pod-watch
         app.kubernetes.io/name: pod-watch
-        app.kubernetes.io/version: "1.0.0"
+        app.kubernetes.io/version: "1.0.3"
     spec:
       serviceAccountName: pod-watch-sa
       containers:
         - name: app
-          image: kubernetes-pod-watch:v1.0.0
+          image: kubernetes-pod-watch:v1.0.3
           imagePullPolicy: IfNotPresent
           env:
             - name: DB_HOST
@@ -103,7 +103,7 @@ metadata:
   namespace: pod-watch
   labels:
     app.kubernetes.io/name: pod-watch-collector
-    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/version: "1.0.3"
 spec:
   schedule: "*/2 * * * *"
   successfulJobsHistoryLimit: 2
@@ -115,13 +115,13 @@ spec:
           labels:
             app: pod-watch-collector
             app.kubernetes.io/name: pod-watch-collector
-            app.kubernetes.io/version: "1.0.0"
+            app.kubernetes.io/version: "1.0.3"
         spec:
           serviceAccountName: pod-watch-sa
           restartPolicy: OnFailure
           containers:
             - name: collector
-              image: kubernetes-pod-watch:v1.0.0
+              image: kubernetes-pod-watch:v1.0.3
               imagePullPolicy: IfNotPresent
               command: ["node", "scripts/k8s-collector.mjs"]
               env:

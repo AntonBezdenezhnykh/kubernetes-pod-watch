@@ -14,7 +14,7 @@ import {
   Copy,
   Check,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { ContainerHistoryPanel } from './ContainerHistoryPanel';
 import { LogViewer } from './LogViewer';
@@ -27,6 +27,19 @@ interface PodDetailPanelProps {
 export const PodDetailPanel = ({ pod, onClose }: PodDetailPanelProps) => {
   const [selectedContainer, setSelectedContainer] = useState<Container | null>(null);
   const [copiedField, setCopiedField] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (pod.containers.length === 0) {
+      setSelectedContainer(null);
+      return;
+    }
+
+    // When pod changes, keep selected container only if it exists in new pod; otherwise pick first.
+    setSelectedContainer((prev) => {
+      if (!prev) return pod.containers[0];
+      return pod.containers.find((c) => c.id === prev.id) ?? pod.containers[0];
+    });
+  }, [pod.id, pod.containers]);
 
   const healthConfig = {
     healthy: {
@@ -162,7 +175,7 @@ export const PodDetailPanel = ({ pod, onClose }: PodDetailPanelProps) => {
         {/* Logs section */}
         {selectedContainer && (
           <div className="h-72 border-t border-border">
-            <LogViewer container={selectedContainer} />
+            <LogViewer key={selectedContainer.id} container={selectedContainer} />
           </div>
         )}
       </div>

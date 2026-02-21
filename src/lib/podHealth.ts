@@ -9,6 +9,7 @@ import {
 } from '@/types/kubernetes';
 
 const INITIALIZING_REASONS = new Set(['ContainerCreating', 'PodInitializing']);
+const SIDECAR_HINTS = ['istio', 'istio-proxy', 'vault-agent', 'fluent-bit', 'fluentbit', 'alog'];
 const ERROR_REASONS = new Set([
   'CrashLoopBackOff',
   'OOMKilled',
@@ -19,6 +20,18 @@ const ERROR_REASONS = new Set([
   'InvalidImageName',
   'RunContainerError',
 ]);
+
+export const isSidecarContainer = (container: Container): boolean => {
+  const name = container.name.toLowerCase();
+  const image = container.image.toLowerCase();
+
+  if (SIDECAR_HINTS.some((hint) => name.includes(hint) || image.includes(hint))) {
+    return true;
+  }
+
+  // Common fallback pattern for generic sidecars
+  return name.includes('sidecar');
+};
 
 export const classifyContainerSeverity = (
   container: Container

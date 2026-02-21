@@ -3,7 +3,7 @@ import { Container, LogEntry } from '@/types/kubernetes';
 import { useContainerLogs } from '@/hooks/useKubernetesData';
 import { cn } from '@/lib/utils';
 import { format } from 'date-fns';
-import { Terminal, Download, Trash2, Search, ArrowDown, Loader2 } from 'lucide-react';
+import { Terminal, Download, Search, ArrowDown, Loader2 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 
@@ -14,6 +14,7 @@ interface LogViewerProps {
 export const LogViewer = ({ container }: LogViewerProps) => {
   const { data: logs = [], isLoading, error } = useContainerLogs(container.id);
   const [searchTerm, setSearchTerm] = useState('');
+  const [quickFilter, setQuickFilter] = useState<'all' | 'error' | 'warning' | 'exception'>('all');
   const [autoScroll, setAutoScroll] = useState(true);
   const logsEndRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -24,9 +25,31 @@ export const LogViewer = ({ container }: LogViewerProps) => {
     }
   }, [logs, autoScroll]);
 
-  const filteredLogs = logs.filter((log) =>
-    log.message.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const hasStackTracePattern = (message: string): boolean => {
+    const lower = message.toLowerCase();
+    return (
+      lower.includes('exception') ||
+      lower.includes('stacktrace') ||
+      lower.includes('traceback') ||
+      /\bat\s+\S+\s+\(.+\)/.test(message) ||
+      /\bat\s+\S+\.\S+/.test(message)
+    );
+  };
+
+  const exceptionCount = logs.filter((log) => hasStackTracePattern(log.message)).length;
+  const errorCount = logs.filter((log) => log.level === 'error').length;
+  const warningCount = logs.filter((log) => log.level === 'warn').length;
+
+  const filteredLogs = logs.filter((log) => {
+    const matchesSearch = log.message.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesQuickFilter =
+      quickFilter === 'all' ||
+      (quickFilter === 'error' && log.level === 'error') ||
+      (quickFilter === 'warning' && log.level === 'warn') ||
+      (quickFilter === 'exception' && hasStackTracePattern(log.message));
+
+    return matchesSearch && matchesQuickFilter;
+  });
 
   const handleScroll = () => {
     if (containerRef.current) {
@@ -69,6 +92,52 @@ export const LogViewer = ({ container }: LogViewerProps) => {
         </div>
 
         <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setQuickFilter('all')}
+              className={cn(
+                'px-2 py-1 rounded text-xs border transition-colors',
+                quickFilter === 'all'
+                  ? 'border-primary bg-primary/20 text-primary'
+                  : 'border-border text-muted-foreground hover:text-foreground'
+              )}
+            >
+              All ({logs.length})
+            </button>
+            <button
+              onClick={() => setQuickFilter('error')}
+              className={cn(
+                'px-2 py-1 rounded text-xs border transition-colors',
+                quickFilter === 'error'
+                  ? 'border-[hsl(var(--status-error)/0.6)] bg-[hsl(var(--status-error)/0.15)] text-[hsl(var(--status-error))]'
+                  : 'border-border text-muted-foreground hover:text-foreground'
+              )}
+            >
+              Errors ({errorCount})
+            </button>
+            <button
+              onClick={() => setQuickFilter('exception')}
+              className={cn(
+                'px-2 py-1 rounded text-xs border transition-colors',
+                quickFilter === 'exception'
+                  ? 'border-[hsl(var(--status-error)/0.6)] bg-[hsl(var(--status-error)/0.15)] text-[hsl(var(--status-error))]'
+                  : 'border-border text-muted-foreground hover:text-foreground'
+              )}
+            >
+              Exceptions ({exceptionCount})
+            </button>
+            <button
+              onClick={() => setQuickFilter('warning')}
+              className={cn(
+                'px-2 py-1 rounded text-xs border transition-colors',
+                quickFilter === 'warning'
+                  ? 'border-[hsl(var(--status-warning)/0.6)] bg-[hsl(var(--status-warning)/0.15)] text-[hsl(var(--status-warning))]'
+                  : 'border-border text-muted-foreground hover:text-foreground'
+              )}
+            >
+              Warnings ({warningCount})
+            </button>
+          </div>
           <div className="relative">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
             <Input
