@@ -149,19 +149,41 @@ export const LogViewer = ({ container }: LogViewerProps) => {
   const viewerBody = (
     <div className={cn('h-full flex flex-col terminal-window relative', isFullscreen && 'h-[calc(100vh-1.5rem)]')}>
       {/* Terminal Header */}
-      <div className="terminal-header">
-        <div className="flex items-center gap-2 flex-1">
-          <div className="terminal-dot bg-[hsl(var(--status-error))]" />
-          <div className="terminal-dot bg-[hsl(var(--status-warning))]" />
-          <div className="terminal-dot bg-[hsl(var(--status-ready))]" />
-          <div className="ml-3 flex items-center gap-2">
-            <Terminal className="w-4 h-4 text-muted-foreground" />
-            <span className="font-mono text-sm">{container.name}</span>
+      <div className="terminal-header flex-col items-stretch gap-2">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="terminal-dot bg-[hsl(var(--status-error))]" />
+            <div className="terminal-dot bg-[hsl(var(--status-warning))]" />
+            <div className="terminal-dot bg-[hsl(var(--status-ready))]" />
+            <div className="ml-3 flex items-center gap-2 min-w-0">
+              <Terminal className="w-4 h-4 text-muted-foreground shrink-0" />
+              <span className="font-mono text-sm truncate">{container.name}</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={() => setIsFullscreen((prev) => !prev)}
+              title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+            >
+              {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={downloadLogs}
+              title="Download logs"
+            >
+              <Download className="w-3.5 h-3.5" />
+            </Button>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <div className="flex items-center gap-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1 flex-wrap">
             <button
               onClick={() => setQuickFilter('all')}
               className={cn(
@@ -207,33 +229,15 @@ export const LogViewer = ({ container }: LogViewerProps) => {
               Warnings ({warningCount})
             </button>
           </div>
-          <div className="relative">
+          <div className="relative ml-auto min-w-[180px] flex-1 md:flex-none md:min-w-0">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
             <Input
               placeholder="Filter logs..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="h-7 w-48 pl-8 text-xs bg-background/50 border-border"
+              className="h-7 w-full md:w-48 pl-8 text-xs bg-background/50 border-border"
             />
           </div>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7"
-            onClick={() => setIsFullscreen((prev) => !prev)}
-            title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
-          >
-            {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7"
-            onClick={downloadLogs}
-            title="Download logs"
-          >
-            <Download className="w-3.5 h-3.5" />
-          </Button>
         </div>
       </div>
 

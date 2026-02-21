@@ -14,6 +14,7 @@ import { cn } from '@/lib/utils';
 import { StatusBadge } from './StatusBadge';
 import { formatDistanceToNow } from 'date-fns';
 import { CheckCircle2 } from 'lucide-react';
+import { VersionImpactPanel } from './VersionImpactPanel';
 
 export const Dashboard = () => {
   const [selectedDeploymentId, setSelectedDeploymentId] = useState<string | null>(null);
@@ -182,6 +183,10 @@ export const Dashboard = () => {
             activeFilter={healthFilter}
             totalLabel="Total Deployments"
           />
+        </div>
+
+        <div className="mb-6">
+          <VersionImpactPanel deployment={selectedDeployment ?? deployments[0] ?? null} />
         </div>
 
         <div className="grid grid-cols-12 gap-4 items-start">
