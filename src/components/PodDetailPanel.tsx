@@ -1,4 +1,4 @@
-import { PodWithHealth, Container } from '@/types/kubernetes';
+import { PodWithHealth, Container, ContainerImpact, PodImpact } from '@/types/kubernetes';
 import { cn } from '@/lib/utils';
 import { formatDistanceToNow, format } from 'date-fns';
 import {
@@ -20,16 +20,42 @@ import { ContainerHistoryPanel } from './ContainerHistoryPanel';
 import { LogViewer } from './LogViewer';
 import { ResourceUsagePanel } from './ResourceUsagePanel';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { classifyContainerSeverity, isSidecarContainer } from '@/lib/podHealth';
 
 interface PodDetailPanelProps {
   pod: PodWithHealth;
   onClose: () => void;
+  containerImpactsByContainerId?: Record<string, ContainerImpact>;
+  podImpactsByPodId?: Record<string, PodImpact>;
 }
 
-export const PodDetailPanel = ({ pod, onClose }: PodDetailPanelProps) => {
+export const PodDetailPanel = ({
+  pod,
+  onClose,
+  containerImpactsByContainerId = {},
+  podImpactsByPodId = {},
+}: PodDetailPanelProps) => {
   const [selectedContainer, setSelectedContainer] = useState<Container | null>(null);
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [detailTab, setDetailTab] = useState<'logs' | 'resources'>('logs');
+
+  const getPreferredContainer = (containers: Container[]): Container | null => {
+    if (containers.length === 0) return null;
+
+    const score = (container: Container) => {
+      const severity = classifyContainerSeverity(container).score;
+      return severity * 100 + container.restartCount;
+    };
+
+    const appContainers = containers.filter((container) => !isSidecarContainer(container));
+    const candidates = appContainers.length > 0 ? appContainers : containers;
+
+    return [...candidates].sort((a, b) => {
+      const diff = score(b) - score(a);
+      if (diff !== 0) return diff;
+      return a.name.localeCompare(b.name);
+    })[0] ?? candidates[0];
+  };
 
   useEffect(() => {
     if (pod.containers.length === 0) {
@@ -37,10 +63,10 @@ export const PodDetailPanel = ({ pod, onClose }: PodDetailPanelProps) => {
       return;
     }
 
-    // When pod changes, keep selected container only if it exists in new pod; otherwise pick first.
+    // When pod changes, keep selected container only if it exists in new pod; otherwise pick first app container.
     setSelectedContainer((prev) => {
-      if (!prev) return pod.containers[0];
-      return pod.containers.find((c) => c.id === prev.id) ?? pod.containers[0];
+      if (!prev) return getPreferredContainer(pod.containers);
+      return pod.containers.find((c) => c.id === prev.id) ?? getPreferredContainer(pod.containers);
     });
   }, [pod.id, pod.containers]);
 
@@ -74,15 +100,15 @@ export const PodDetailPanel = ({ pod, onClose }: PodDetailPanelProps) => {
   return (
     <div className="flex flex-col bg-card rounded-xl border border-border overflow-hidden">
       {/* Header */}
-      <div className="p-4 border-b border-border bg-card/50">
+      <div className="p-3 border-b border-border bg-card/50">
         <div className="flex items-start justify-between">
           <div className="flex items-start gap-3">
             <div className={cn('p-2.5 rounded-lg', config.className)}>
-              <HealthIcon className="w-6 h-6" />
+              <HealthIcon className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-lg font-semibold">{pod.name}</h2>
-              <div className="flex items-center gap-2 mt-1 text-sm text-muted-foreground">
+              <h2 className="text-base font-semibold">{pod.name}</h2>
+              <div className="flex items-center gap-2 mt-1 text-xs text-muted-foreground">
                 <span className="text-primary">{pod.namespace}</span>
                 <span>•</span>
                 <span>{pod.status}</span>
@@ -101,7 +127,7 @@ export const PodDetailPanel = ({ pod, onClose }: PodDetailPanelProps) => {
         </div>
 
         {/* Metadata */}
-        <div className="grid grid-cols-2 gap-3 mt-4 text-sm">
+        <div className="grid grid-cols-2 gap-3 mt-3 text-xs">
           <div className="flex items-center gap-2 group">
             <Server className="w-4 h-4 text-muted-foreground" />
             <span className="text-muted-foreground">Node:</span>
@@ -146,14 +172,14 @@ export const PodDetailPanel = ({ pod, onClose }: PodDetailPanelProps) => {
         {Object.keys(pod.labels).length > 0 && (
           <div className="mt-3">
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-2">
-              <Tag className="w-3.5 h-3.5" />
+              <Tag className="w-3 h-3" />
               Labels
             </div>
             <div className="flex flex-wrap gap-1.5">
               {Object.entries(pod.labels).map(([key, value]) => (
                 <span
                   key={key}
-                  className="px-2 py-0.5 bg-secondary text-xs rounded font-mono truncate max-w-[200px]"
+                  className="px-1.5 py-0.5 bg-secondary text-[11px] rounded font-mono truncate max-w-[200px]"
                   title={`${key}=${value}`}
                 >
                   {key}={value}
@@ -172,6 +198,8 @@ export const PodDetailPanel = ({ pod, onClose }: PodDetailPanelProps) => {
             pod={pod}
             selectedContainerId={selectedContainer?.id ?? null}
             onSelectContainer={setSelectedContainer}
+            containerImpactsByContainerId={containerImpactsByContainerId}
+            podImpact={podImpactsByPodId[pod.id]}
           />
         </div>
 

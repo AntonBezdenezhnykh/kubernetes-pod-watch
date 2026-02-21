@@ -22,7 +22,6 @@ type WindowPreset = '5m' | '30m' | '24h';
 
 interface VersionSnapshot {
   version: string;
-  podName: string;
   createdAt: string;
   containers: DeploymentGroup['pods'][number]['containers'];
 }
@@ -91,7 +90,6 @@ export const VersionImpactPanel = ({ deployment }: VersionImpactPanelProps) => {
       if (!byVersion.has(version)) {
         byVersion.set(version, {
           version,
-          podName: pod.name,
           createdAt: pod.createdAt,
           containers: pod.containers,
         });
@@ -278,24 +276,21 @@ export const VersionImpactPanel = ({ deployment }: VersionImpactPanelProps) => {
   }
 
   return (
-    <div className="rounded-xl border border-border bg-card p-4 space-y-4">
+    <div className="rounded-xl border border-border bg-card p-3 space-y-3">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-sm font-semibold flex items-center gap-2">
+          <h2 className="text-sm font-semibold flex items-center gap-1.5">
             <Gauge className="w-4 h-4 text-primary" />
-            Version Impact: {deployment.name}
+            {deployment.name}
           </h2>
-          <p className="text-xs text-muted-foreground mt-1">
-            Compare resource usage by version (latest pod of each version, up to 10 versions)
-          </p>
         </div>
-        <div className="flex items-center gap-2 text-xs">
+        <div className="flex items-center gap-1.5 text-[11px]">
           {(['5m', '30m', '24h'] as WindowPreset[]).map((preset) => (
             <button
               key={preset}
               onClick={() => setWindowPreset(preset)}
               className={cn(
-                'px-2 py-1 rounded border',
+                'px-1.5 py-0.5 rounded border',
                 windowPreset === preset
                   ? 'border-primary bg-primary/15 text-primary'
                   : 'border-border text-muted-foreground'
@@ -307,13 +302,13 @@ export const VersionImpactPanel = ({ deployment }: VersionImpactPanelProps) => {
         </div>
       </div>
 
-      <div className="grid grid-cols-12 gap-3">
+      <div className="grid grid-cols-12 gap-2.5">
         <div className="col-span-6">
-          <label className="text-xs text-muted-foreground block mb-1">Current version</label>
+          <label className="text-[11px] text-muted-foreground block mb-1">Current version</label>
           <select
             value={selectedCurrent}
             onChange={(e) => setCurrentVersion(e.target.value)}
-            className="w-full bg-background border border-border rounded px-2 py-1.5 text-sm"
+            className="w-full bg-background border border-border rounded px-2 py-1 text-[13px]"
           >
             {latestVersions.map((version) => (
               <option key={`current-${version}`} value={version}>
@@ -323,11 +318,11 @@ export const VersionImpactPanel = ({ deployment }: VersionImpactPanelProps) => {
           </select>
         </div>
         <div className="col-span-6">
-          <label className="text-xs text-muted-foreground block mb-1">Baseline version</label>
+          <label className="text-[11px] text-muted-foreground block mb-1">Baseline version</label>
           <select
             value={selectedBaseline}
             onChange={(e) => setBaselineVersion(e.target.value)}
-            className="w-full bg-background border border-border rounded px-2 py-1.5 text-sm"
+            className="w-full bg-background border border-border rounded px-2 py-1 text-[13px]"
           >
             {latestVersions.map((version) => (
               <option key={`baseline-${version}`} value={version}>
@@ -339,8 +334,8 @@ export const VersionImpactPanel = ({ deployment }: VersionImpactPanelProps) => {
       </div>
 
       {latestImpact && previousImpact && (
-        <div className="rounded-lg border border-border p-3 text-xs flex items-center gap-5">
-          <div className="text-muted-foreground">
+        <div className="rounded-lg border border-border p-2.5 text-[11px] flex items-center gap-4">
+          <div className="text-muted-foreground leading-tight">
             Recent impact: <span className="text-foreground font-medium">{latestImpact.version}</span> vs{' '}
             <span className="text-foreground font-medium">{previousImpact.version}</span>
           </div>
@@ -356,18 +351,18 @@ export const VersionImpactPanel = ({ deployment }: VersionImpactPanelProps) => {
       )}
 
       {isLoadingSamples ? (
-        <div className="text-sm text-muted-foreground">Loading version samples...</div>
+        <div className="text-xs text-muted-foreground">Loading version samples...</div>
       ) : hasSamplesError ? (
-        <div className="text-sm text-[hsl(var(--status-error))] flex items-center gap-2">
+        <div className="text-xs text-[hsl(var(--status-error))] flex items-center gap-2">
           <AlertTriangle className="w-4 h-4" />
           Failed to load one or more container sample streams.
         </div>
       ) : (
         <>
           <div className="rounded-lg border border-border overflow-auto">
-            <table className="w-full text-sm">
+            <table className="w-full text-[13px]">
               <thead className="bg-secondary/40">
-                <tr className="text-left text-xs text-muted-foreground">
+                <tr className="text-left text-[11px] text-muted-foreground">
                   <th className="px-3 py-2">Container</th>
                   <th className="px-3 py-2">CPU p95 ({selectedBaseline} → {selectedCurrent})</th>
                   <th className="px-3 py-2">RAM p95 ({selectedBaseline} → {selectedCurrent})</th>
@@ -411,8 +406,8 @@ export const VersionImpactPanel = ({ deployment }: VersionImpactPanelProps) => {
           </div>
 
           <div className="grid grid-cols-2 gap-3">
-            <div className="rounded-lg border border-border p-2">
-              <div className="text-xs text-muted-foreground px-1 pb-1">
+            <div className="rounded-lg border border-border p-1.5">
+              <div className="text-[11px] text-muted-foreground px-1 pb-1">
                 CPU trend (relative time)
               </div>
               <ChartContainer
@@ -433,8 +428,8 @@ export const VersionImpactPanel = ({ deployment }: VersionImpactPanelProps) => {
                 </LineChart>
               </ChartContainer>
             </div>
-            <div className="rounded-lg border border-border p-2">
-              <div className="text-xs text-muted-foreground px-1 pb-1">
+            <div className="rounded-lg border border-border p-1.5">
+              <div className="text-[11px] text-muted-foreground px-1 pb-1">
                 RAM trend (relative time)
               </div>
               <ChartContainer
@@ -457,15 +452,15 @@ export const VersionImpactPanel = ({ deployment }: VersionImpactPanelProps) => {
             </div>
           </div>
 
-          <div className="rounded-lg border border-border p-3">
-            <div className="text-xs text-muted-foreground mb-2">Recent 10 version impact (deployment totals, p95)</div>
+          <div className="rounded-lg border border-border p-2.5">
+            <div className="text-[11px] text-muted-foreground mb-1.5">Recent 10 versions (deployment totals, p95)</div>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
               {versionImpactRows.map((row, index) => {
                 const prev = versionImpactRows[index + 1];
                 const cpuDelta = prev ? deltaPercent(row.cpuP95Total, prev.cpuP95Total) : null;
                 const memoryDelta = prev ? deltaPercent(row.memoryP95Total, prev.memoryP95Total) : null;
                 return (
-                  <div key={row.version} className="rounded border border-border/70 px-2 py-1.5 text-xs">
+                  <div key={row.version} className="rounded border border-border/70 px-2 py-1.5 text-[11px]">
                     <div className="font-mono">{row.version}</div>
                     <div className="text-muted-foreground">
                       {formatDistanceToNow(new Date(row.createdAt), { addSuffix: true })}
@@ -490,4 +485,3 @@ export const VersionImpactPanel = ({ deployment }: VersionImpactPanelProps) => {
     </div>
   );
 };
-

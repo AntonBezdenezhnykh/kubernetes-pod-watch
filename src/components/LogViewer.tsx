@@ -3,7 +3,7 @@ import { Container, LogEntry } from '@/types/kubernetes';
 import { useContainerLogs, useContainerResourceSamples } from '@/hooks/useKubernetesData';
 import { cn } from '@/lib/utils';
 import { format } from 'date-fns';
-import { Terminal, Download, Search, ArrowDown, Loader2, Maximize2, Minimize2 } from 'lucide-react';
+import { Terminal, Download, Search, ArrowDown, Loader2, Maximize2, Minimize2, ArrowUpToLine, ArrowDownToLine } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 
@@ -22,10 +22,25 @@ export const LogViewer = ({ container }: LogViewerProps) => {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (autoScroll && logsEndRef.current) {
-      logsEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    if (autoScroll && containerRef.current) {
+      // Keep scrolling constrained to the log viewport only; avoid page-level jump.
+      const el = containerRef.current;
+      el.scrollTop = el.scrollHeight;
     }
   }, [logs, autoScroll]);
+
+  useEffect(() => {
+    if (!isFullscreen) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsFullscreen(false);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isFullscreen]);
 
   const hasStackTracePattern = (message: string): boolean => {
     const lower = message.toLowerCase();
@@ -62,8 +77,18 @@ export const LogViewer = ({ container }: LogViewerProps) => {
   };
 
   const scrollToBottom = () => {
-    logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (containerRef.current) {
+      const el = containerRef.current;
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    }
     setAutoScroll(true);
+  };
+
+  const scrollToTop = () => {
+    if (containerRef.current) {
+      containerRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+    setAutoScroll(false);
   };
 
   const downloadLogs = () => {
@@ -161,6 +186,24 @@ export const LogViewer = ({ container }: LogViewerProps) => {
             </div>
           </div>
           <div className="flex items-center gap-1 shrink-0">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={scrollToTop}
+              title="Go to beginning"
+            >
+              <ArrowUpToLine className="w-3.5 h-3.5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={scrollToBottom}
+              title="Go to end"
+            >
+              <ArrowDownToLine className="w-3.5 h-3.5" />
+            </Button>
             <Button
               variant="ghost"
               size="icon"

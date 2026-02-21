@@ -64,13 +64,13 @@ export const HealthSummaryCards = ({
   ];
 
   return (
-    <div className="grid grid-cols-5 gap-4">
+    <div className="grid grid-cols-5 gap-3">
       {cards.map((card) => (
         <button
           key={card.key}
           onClick={() => onFilterHealth(card.key)}
           className={cn(
-            'p-4 rounded-xl border transition-all duration-200 text-left',
+            'p-3 rounded-xl border transition-all duration-200 text-left',
             card.bgClass,
             activeFilter === card.key ? card.borderClass : 'border-transparent',
             activeFilter === card.key && 'ring-1 ring-offset-2 ring-offset-background',
@@ -80,24 +80,24 @@ export const HealthSummaryCards = ({
             activeFilter === card.key && card.key === 'all' && 'ring-primary'
           )}
         >
-          <div className="flex items-center justify-between mb-2">
-            <card.icon className={cn('w-5 h-5', card.textClass)} />
+          <div className="flex items-center justify-between mb-1.5">
+            <card.icon className={cn('w-4 h-4', card.textClass)} />
           </div>
-          <div className={cn('text-3xl font-bold', card.textClass)}>{card.count}</div>
-          <div className="text-sm text-muted-foreground">{card.label}</div>
+          <div className={cn('text-2xl font-bold leading-tight', card.textClass)}>{card.count}</div>
+          <div className="text-xs text-muted-foreground">{card.label}</div>
         </button>
       ))}
 
       {/* Version Info Card */}
-      <div className="p-4 rounded-xl border border-border bg-card/50">
-        <div className="flex items-center gap-2 mb-2">
-          <GitBranch className="w-5 h-5 text-primary" />
-          <span className="text-sm text-muted-foreground">Latest Version</span>
+      <div className="p-3 rounded-xl border border-border bg-card/50">
+        <div className="flex items-center gap-1.5 mb-1.5">
+          <GitBranch className="w-4 h-4 text-primary" />
+          <span className="text-xs text-muted-foreground">Latest Version</span>
         </div>
-        <div className="text-lg font-mono font-semibold text-primary truncate" title={latestVersion}>
+        <div className="text-base font-mono font-semibold text-primary truncate" title={latestVersion}>
           {latestVersion}
         </div>
-        <div className="text-xs text-muted-foreground mt-1">
+        <div className="text-[11px] text-muted-foreground mt-0.5">
           {versionGroups.length} version{versionGroups.length !== 1 ? 's' : ''} deployed
         </div>
       </div>

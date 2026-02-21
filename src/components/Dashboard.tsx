@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { DeploymentGroup, HealthStatus, PodWithHealth } from '@/types/kubernetes';
 import { usePods } from '@/hooks/useKubernetesData';
+import { useImpactScores } from '@/hooks/useImpactScores';
 import { HealthSummaryCards } from './HealthSummaryCards';
 import { PodDetailPanel } from './PodDetailPanel';
 import {
@@ -14,7 +15,7 @@ import { cn } from '@/lib/utils';
 import { StatusBadge } from './StatusBadge';
 import { formatDistanceToNow } from 'date-fns';
 import { CheckCircle2 } from 'lucide-react';
-import { VersionImpactPanel } from './VersionImpactPanel';
+import { Link } from 'react-router-dom';
 
 export const Dashboard = () => {
   const [selectedDeploymentId, setSelectedDeploymentId] = useState<string | null>(null);
@@ -58,6 +59,10 @@ export const Dashboard = () => {
   const allDeployments = useMemo(
     () => groupPodsByDeployment(podsWithHealth),
     [podsWithHealth]
+  );
+  const { podImpactsByPodId, containerImpactsByContainerId } = useImpactScores(
+    allDeployments,
+    selectedDeploymentId
   );
 
   const latestPods = useMemo(
@@ -147,11 +152,10 @@ export const Dashboard = () => {
                 <Layers className="w-6 h-6 text-primary" />
               </div>
               <div>
-                <h1 className="text-xl font-bold">Kubernetes Monitor</h1>
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <h1 className="text-lg font-bold">Kubernetes Monitor</h1>
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
                   <span>{allDeployments.length} deployments</span>
-                  <span>• {podsWithHealth.length} tracked pods</span>
-                  <span>• {healthyCount} healthy latest pods</span>
+                  <span>• {podsWithHealth.length} pods</span>
                   {errorCount > 0 && (
                     <span className="flex items-center gap-1 text-[hsl(var(--status-error))]">
                       • {errorCount} error{errorCount !== 1 ? 's' : ''}
@@ -166,10 +170,15 @@ export const Dashboard = () => {
               </div>
             </div>
 
-            <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching}>
-              <RefreshCw className={cn('w-4 h-4 mr-2', isFetching && 'animate-spin')} />
-              Refresh
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching}>
+                <RefreshCw className={cn('w-4 h-4 mr-2', isFetching && 'animate-spin')} />
+                Refresh
+              </Button>
+              <Button asChild variant="outline" size="sm">
+                <Link to="/version-impact">Version Impact</Link>
+              </Button>
+            </div>
           </div>
         </div>
       </header>
@@ -185,10 +194,6 @@ export const Dashboard = () => {
           />
         </div>
 
-        <div className="mb-6">
-          <VersionImpactPanel deployment={selectedDeployment ?? deployments[0] ?? null} />
-        </div>
-
         <div className="grid grid-cols-12 gap-4 items-start">
           <section className="col-span-3 bg-card rounded-xl border border-border p-3">
             <h2 className="text-sm font-semibold mb-3">Deployments</h2>
@@ -201,13 +206,14 @@ export const Dashboard = () => {
                   : 'border-border text-muted-foreground hover:text-foreground hover:bg-secondary/60'
               )}
             >
-              {latestIssuesOnly ? 'Showing: Latest Pod Log Issues Only' : 'Show: Latest Pod Log Issues Only'}
+              {latestIssuesOnly ? 'Only with log issues' : 'Show only log issues'}
             </button>
             <div className="space-y-2">
               {deployments.map((deployment) => {
                 const latestPod = deployment.pods[0];
                 const latestHasLogIssues = hasLogIssues(latestPod);
                 const latestNeedsAttention = needsAttention(latestPod);
+                const latestImpact = latestPod ? podImpactsByPodId[latestPod.id] : undefined;
                 return (
                   <button
                     key={deployment.id}
@@ -221,17 +227,26 @@ export const Dashboard = () => {
                           : 'border-[hsl(var(--status-ready)/0.35)] bg-[hsl(var(--status-ready)/0.06)] hover:bg-[hsl(var(--status-ready)/0.1)]'
                     )}
                   >
-                    <div className="font-medium truncate">{deployment.name}</div>
-                    <div className="text-xs text-muted-foreground mt-1">
-                      Latest pod: {latestPod?.name ?? 'n/a'}
-                    </div>
+                    <div className="font-medium text-sm truncate">{deployment.name}</div>
                     {latestPod && (
-                      <div className="text-[11px] text-muted-foreground mt-1">
+                      <div className="text-[10px] text-muted-foreground mt-1">
                         {formatDistanceToNow(new Date(latestPod.createdAt), { addSuffix: true })}
                       </div>
                     )}
+                    {latestImpact && latestImpact.status !== 'unknown' && latestImpact.score !== null && (
+                      <div
+                        className={cn(
+                          'mt-2 text-[11px] inline-flex items-center gap-1 px-1.5 py-0.5 rounded',
+                          latestImpact.status === 'degraded' && 'bg-[hsl(var(--status-error)/0.15)] text-[hsl(var(--status-error))]',
+                          latestImpact.status === 'improved' && 'bg-[hsl(var(--status-ready)/0.15)] text-[hsl(var(--status-ready))]',
+                          latestImpact.status === 'stable' && 'bg-secondary text-muted-foreground'
+                        )}
+                      >
+                        Impact {latestImpact.score > 0 ? '+' : ''}{latestImpact.score.toFixed(1)}%
+                      </div>
+                    )}
                     {latestHasLogIssues ? (
-                      <div className="mt-2 flex items-center gap-3 text-xs">
+                      <div className="mt-2 flex items-center gap-2.5 text-[11px]">
                         {(latestPod?.logSummary.errors ?? 0) > 0 && (
                           <span className="text-[hsl(var(--status-error))]">
                             {latestPod?.logSummary.errors} errors
@@ -249,13 +264,13 @@ export const Dashboard = () => {
                         )}
                       </div>
                     ) : hasStatusIssues(latestPod) ? (
-                      <div className="mt-2 flex items-center gap-1.5 text-xs text-[hsl(var(--status-warning))]">
+                      <div className="mt-2 flex items-center gap-1.5 text-[11px] text-[hsl(var(--status-warning))]">
                         Needs attention: {latestPod?.status}
                       </div>
                     ) : (
-                      <div className="mt-2 flex items-center gap-1.5 text-xs text-[hsl(var(--status-ready))]">
+                      <div className="mt-2 flex items-center gap-1.5 text-[11px] text-[hsl(var(--status-ready))]">
                         <CheckCircle2 className="w-3.5 h-3.5" />
-                        Healthy - no attention needed
+                        Healthy
                       </div>
                     )}
                   </button>
@@ -268,14 +283,12 @@ export const Dashboard = () => {
           </section>
 
           <section className="col-span-4 bg-card rounded-xl border border-border p-3">
-            <h2 className="text-sm font-semibold mb-1">Pods</h2>
-            <p className="text-xs text-muted-foreground mb-3">
-              Sorted by creation time (newest first)
-            </p>
+            <h2 className="text-sm font-semibold mb-3">Pods</h2>
             <div className="space-y-2">
               {selectedDeployment?.pods.map((pod) => {
                 const podHasLogIssues = hasLogIssues(pod);
                 const podNeedsAttention = needsAttention(pod);
+                const podImpact = podImpactsByPodId[pod.id];
                 return (
                   <button
                     key={pod.id}
@@ -290,14 +303,26 @@ export const Dashboard = () => {
                     )}
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <span className="font-medium truncate">{pod.name}</span>
+                      <span className="font-medium text-sm truncate">{pod.name}</span>
                       <StatusBadge status={pod.status} className="text-[10px]" />
                     </div>
-                    <div className="mt-1 text-xs text-muted-foreground">
+                    <div className="mt-1 text-[11px] text-muted-foreground">
                       {formatDistanceToNow(new Date(pod.createdAt), { addSuffix: true })}
                     </div>
+                    {podImpact && podImpact.status !== 'unknown' && podImpact.score !== null && (
+                      <div
+                        className={cn(
+                          'mt-2 text-[11px] inline-flex items-center gap-1 px-1.5 py-0.5 rounded',
+                          podImpact.status === 'degraded' && 'bg-[hsl(var(--status-error)/0.15)] text-[hsl(var(--status-error))]',
+                          podImpact.status === 'improved' && 'bg-[hsl(var(--status-ready)/0.15)] text-[hsl(var(--status-ready))]',
+                          podImpact.status === 'stable' && 'bg-secondary text-muted-foreground'
+                        )}
+                      >
+                        Impact {podImpact.score > 0 ? '+' : ''}{podImpact.score.toFixed(1)}%
+                      </div>
+                    )}
                     {podHasLogIssues ? (
-                      <div className="mt-2 flex items-center gap-3 text-xs">
+                      <div className="mt-2 flex items-center gap-2.5 text-[11px]">
                         {pod.logSummary.errors > 0 && (
                           <span className="text-[hsl(var(--status-error))]">
                             {pod.logSummary.errors} errors
@@ -315,13 +340,13 @@ export const Dashboard = () => {
                         )}
                       </div>
                     ) : hasStatusIssues(pod) ? (
-                      <div className="mt-2 flex items-center gap-1.5 text-xs text-[hsl(var(--status-warning))]">
+                      <div className="mt-2 flex items-center gap-1.5 text-[11px] text-[hsl(var(--status-warning))]">
                         Needs attention: {pod.status}
                       </div>
                     ) : (
-                      <div className="mt-2 flex items-center gap-1.5 text-xs text-[hsl(var(--status-ready))]">
+                      <div className="mt-2 flex items-center gap-1.5 text-[11px] text-[hsl(var(--status-ready))]">
                         <CheckCircle2 className="w-3.5 h-3.5" />
-                        Healthy - no attention needed
+                        Healthy
                       </div>
                     )}
                   </button>
@@ -335,7 +360,12 @@ export const Dashboard = () => {
 
           <section className="col-span-5">
             {selectedPod ? (
-              <PodDetailPanel pod={selectedPod} onClose={() => setSelectedPod(null)} />
+              <PodDetailPanel
+                pod={selectedPod}
+                onClose={() => setSelectedPod(null)}
+                podImpactsByPodId={podImpactsByPodId}
+                containerImpactsByContainerId={containerImpactsByContainerId}
+              />
             ) : (
               <div className="h-full min-h-[40vh] rounded-xl border border-border bg-card flex items-center justify-center text-muted-foreground">
                 Select a pod to inspect containers and logs.

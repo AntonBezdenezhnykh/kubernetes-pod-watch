@@ -90,6 +90,22 @@ export interface ResourceSample {
   memoryBytes: number;
 }
 
+export type ImpactStatus = 'degraded' | 'improved' | 'stable' | 'unknown';
+
+export interface ContainerImpact {
+  status: ImpactStatus;
+  score: number | null;
+  cpuDeltaPercent: number | null;
+  memoryDeltaPercent: number | null;
+}
+
+export interface PodImpact {
+  status: ImpactStatus;
+  score: number | null;
+  degradedCount: number;
+  improvedCount: number;
+}
+
 // Container status history for timeline
 export interface ContainerStatusEvent {
   containerId: string;

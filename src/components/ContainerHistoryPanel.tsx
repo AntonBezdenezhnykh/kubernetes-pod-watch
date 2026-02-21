@@ -1,4 +1,4 @@
-import { Container, PodWithHealth } from '@/types/kubernetes';
+import { Container, ContainerImpact, PodImpact, PodWithHealth } from '@/types/kubernetes';
 import { cn } from '@/lib/utils';
 import { formatDistanceToNow } from 'date-fns';
 import { classifyContainerSeverity, isSidecarContainer } from '@/lib/podHealth';
@@ -10,19 +10,22 @@ import {
   Clock,
   AlertTriangle,
   Image,
-  Terminal,
 } from 'lucide-react';
 
 interface ContainerHistoryPanelProps {
   pod: PodWithHealth;
   selectedContainerId: string | null;
   onSelectContainer: (container: Container) => void;
+  containerImpactsByContainerId?: Record<string, ContainerImpact>;
+  podImpact?: PodImpact;
 }
 
 export const ContainerHistoryPanel = ({
   pod,
   selectedContainerId,
   onSelectContainer,
+  containerImpactsByContainerId = {},
+  podImpact,
 }: ContainerHistoryPanelProps) => {
   const sortBySeverity = (containers: Container[]) => [...containers].sort((a, b) => {
     const aScore = classifyContainerSeverity(a).score;
@@ -83,24 +86,33 @@ export const ContainerHistoryPanel = ({
   return (
     <div className="flex flex-col">
       {/* Header */}
-      <div className="p-4 border-b border-border">
+      <div className="p-3 border-b border-border">
         <div className="flex items-center justify-between">
           <div>
-            <h3 className="font-semibold flex items-center gap-2">
-              <ContainerIcon className="w-5 h-5 text-primary" />
+            <h3 className="font-semibold text-sm flex items-center gap-2">
+              <ContainerIcon className="w-4 h-4 text-primary" />
               Containers
             </h3>
-            <p className="text-sm text-muted-foreground mt-0.5">
-              {pod.name}
-            </p>
           </div>
-          <div className="flex items-center gap-3 text-sm">
+          <div className="flex items-center gap-2.5 text-xs">
+            {podImpact && podImpact.status !== 'unknown' && podImpact.score !== null && (
+              <span
+                className={cn(
+                  'px-1.5 py-0.5 rounded text-[11px] font-medium',
+                  podImpact.status === 'degraded' && 'bg-[hsl(var(--status-error)/0.15)] text-[hsl(var(--status-error))]',
+                  podImpact.status === 'improved' && 'bg-[hsl(var(--status-ready)/0.15)] text-[hsl(var(--status-ready))]',
+                  podImpact.status === 'stable' && 'bg-secondary text-muted-foreground'
+                )}
+              >
+                Impact {podImpact.score > 0 ? '+' : ''}{podImpact.score.toFixed(1)}%
+              </span>
+            )}
             <span className="flex items-center gap-1.5">
-              <CheckCircle className="w-4 h-4 text-[hsl(var(--status-ready))]" />
+              <CheckCircle className="w-3.5 h-3.5 text-[hsl(var(--status-ready))]" />
               {pod.containers.filter((c) => c.ready).length} ready
             </span>
             <span className="flex items-center gap-1.5">
-              <XCircle className="w-4 h-4 text-[hsl(var(--status-error))]" />
+              <XCircle className="w-3.5 h-3.5 text-[hsl(var(--status-error))]" />
               {pod.containers.filter((c) => !c.ready).length} issues
             </span>
           </div>
@@ -113,6 +125,7 @@ export const ContainerHistoryPanel = ({
           const config = getStatusConfig(container);
           const StatusIcon = config.icon;
           const isSelected = selectedContainerId === container.id;
+          const impact = containerImpactsByContainerId[container.id];
           const classification = classifyContainerSeverity(container);
           const statusLabel =
             classification.severity === 'initializing'
@@ -131,26 +144,28 @@ export const ContainerHistoryPanel = ({
               <button
                 onClick={() => onSelectContainer(container)}
                 className={cn(
-                  'w-full p-4 rounded-xl border transition-all text-left',
+                  'w-full p-3 rounded-xl border transition-all text-left',
                   config.bgClass,
                   isSelected ? config.borderClass : 'border-transparent',
                   isSelected && 'ring-2 ring-offset-2 ring-offset-background ring-primary/50',
+                  impact?.status === 'degraded' && 'border-[hsl(var(--status-error)/0.45)]',
+                  impact?.status === 'improved' && 'border-[hsl(var(--status-ready)/0.35)]',
                   'hover:border-border'
                 )}
               >
-                <div className="flex items-start justify-between mb-2">
+                <div className="flex items-start justify-between mb-1.5">
                   <div className="flex items-center gap-2">
-                    <StatusIcon className={cn('w-5 h-5', config.iconClass)} />
-                    <span className="font-medium">{container.name}</span>
+                    <StatusIcon className={cn('w-4 h-4', config.iconClass)} />
+                    <span className="font-medium text-sm">{container.name}</span>
                     {sidecar && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-secondary text-muted-foreground">
+                      <span className="text-[10px] px-1 py-0.5 rounded bg-secondary text-muted-foreground">
                         sidecar
                       </span>
                     )}
                   </div>
                   <span
                     className={cn(
-                      'text-xs px-2 py-0.5 rounded-full font-medium',
+                      'text-[11px] px-1.5 py-0.5 rounded-full font-medium',
                       classification.severity === 'healthy' && 'bg-[hsl(var(--status-ready)/0.15)] text-[hsl(var(--status-ready))]',
                       classification.severity === 'initializing' && 'bg-[hsl(var(--status-pending)/0.15)] text-[hsl(var(--status-pending))]',
                       classification.severity === 'warning' && 'bg-[hsl(var(--status-warning)/0.15)] text-[hsl(var(--status-warning))]',
@@ -161,14 +176,47 @@ export const ContainerHistoryPanel = ({
                   </span>
                 </div>
 
+                {impact && impact.status !== 'unknown' && impact.score !== null && (
+                  <div className="mb-2 text-[11px] flex items-center gap-2.5">
+                    <span
+                      className={cn(
+                        'px-1.5 py-0.5 rounded font-medium',
+                        impact.status === 'degraded' && 'bg-[hsl(var(--status-error)/0.15)] text-[hsl(var(--status-error))]',
+                        impact.status === 'improved' && 'bg-[hsl(var(--status-ready)/0.15)] text-[hsl(var(--status-ready))]',
+                        impact.status === 'stable' && 'bg-secondary text-muted-foreground'
+                      )}
+                    >
+                      Impact {impact.score > 0 ? '+' : ''}{impact.score.toFixed(1)}%
+                    </span>
+                    {impact.cpuDeltaPercent !== null && (
+                      <span className={cn(
+                        impact.cpuDeltaPercent >= 10 && 'text-[hsl(var(--status-error))]',
+                        impact.cpuDeltaPercent <= -10 && 'text-[hsl(var(--status-ready))]',
+                        impact.cpuDeltaPercent > -10 && impact.cpuDeltaPercent < 10 && 'text-muted-foreground'
+                      )}>
+                        CPU {impact.cpuDeltaPercent > 0 ? '+' : ''}{impact.cpuDeltaPercent.toFixed(1)}%
+                      </span>
+                    )}
+                    {impact.memoryDeltaPercent !== null && (
+                      <span className={cn(
+                        impact.memoryDeltaPercent >= 10 && 'text-[hsl(var(--status-error))]',
+                        impact.memoryDeltaPercent <= -10 && 'text-[hsl(var(--status-ready))]',
+                        impact.memoryDeltaPercent > -10 && impact.memoryDeltaPercent < 10 && 'text-muted-foreground'
+                      )}>
+                        RAM {impact.memoryDeltaPercent > 0 ? '+' : ''}{impact.memoryDeltaPercent.toFixed(1)}%
+                      </span>
+                    )}
+                  </div>
+                )}
+
                 {/* Image */}
-                <div className="flex items-center gap-2 text-xs text-muted-foreground mb-2">
+                <div className="flex items-center gap-2 text-[11px] text-muted-foreground mb-1.5">
                   <Image className="w-3.5 h-3.5 shrink-0" />
                   <span className="font-mono truncate">{container.image}</span>
                 </div>
 
                 {/* Stats row */}
-                <div className="flex items-center gap-4 text-xs">
+                <div className="flex items-center gap-3 text-[11px]">
                   {container.startedAt && (
                     <div className="flex items-center gap-1.5 text-muted-foreground">
                       <Clock className="w-3.5 h-3.5" />
@@ -192,7 +240,7 @@ export const ContainerHistoryPanel = ({
                 {container.lastState && (
                   <div
                     className={cn(
-                      'mt-3 p-2.5 rounded-lg text-xs',
+                      'mt-2.5 p-2 rounded-lg text-[11px]',
                       classification.severity === 'error'
                         ? 'bg-[hsl(var(--status-error)/0.15)]'
                         : 'bg-[hsl(var(--status-warning)/0.12)]'
@@ -219,12 +267,6 @@ export const ContainerHistoryPanel = ({
                     )}
                   </div>
                 )}
-
-                {/* Click hint */}
-                <div className="mt-3 pt-2 border-t border-border/50 flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <Terminal className="w-3.5 h-3.5" />
-                  Click to view logs
-                </div>
               </button>
             </div>
           );
