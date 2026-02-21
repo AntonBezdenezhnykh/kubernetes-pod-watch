@@ -1,266 +1,212 @@
-# Kubernetes Pod Watch
+# Kubernetes Monitor
 
-Kubernetes Pod Watch is a dashboard + collector pair for fast namespace triage.
+Kubernetes Monitor is a namespace triage tool for Kubernetes.
 
-It answers these questions quickly:
-- Which pods are healthy vs degraded vs failing?
-- Which container has the highest-priority issue?
-- Are there warning/error/exception logs that explain root cause?
+It is designed to answer, quickly:
+- what is healthy vs broken now,
+- which deployment/pod/container needs attention first,
+- whether the latest version degraded or improved CPU/RAM behavior.
 
-## How It Works
+## Main Features
 
-The system has two runtime components:
+- Deployment -> Pods -> Containers -> Logs hierarchy.
+- Pod and container status triage with clear health/attention indicators.
+- Log viewer with:
+  - error/exception/warning quick filters,
+  - search,
+  - fullscreen mode (`Esc` to exit),
+  - jump to log start/end buttons,
+  - nearest CPU/RAM % near log lines (based on container limits).
+- Continuous resource sampling (CPU/RAM every 30s).
+- Version impact scoring:
+  - per container (vs previous version),
+  - per pod (aggregate),
+  - deployment card (latest pod impact).
+- Dedicated Version Impact page (`/version-impact`) with:
+  - Sketch 1 comparison table,
+  - Sketch 2 trend charts,
+  - recent 10 versions impact summary.
 
-1. `pod-watch` web app (Deployment)
-- Serves the UI and HTTP API from one container.
-- Reads data from external PostgreSQL (`pods`, `containers`, `logs` tables).
-- UI sorts pods by attention priority so failures are surfaced first.
+## Architecture
 
-2. `pod-watch-collector` (CronJob)
-- Calls Kubernetes API using in-cluster service account.
-- Pulls pods, container states, and recent logs from the target namespace.
-- Writes/upserts into external PostgreSQL.
+Runtime components:
 
-3. `pod-watch-resource-collector` (Deployment)
-- Runs continuously and samples container CPU/RAM usage every `SAMPLE_INTERVAL_SECONDS` (default `30`).
-- Uses `metrics.k8s.io` when available, otherwise falls back to node summary API.
-- Writes samples to `container_resource_samples` in external PostgreSQL.
+1. `pod-watch` Deployment
+- serves static UI and local DB API (`scripts/local-db-server.mjs`).
+- reads from external PostgreSQL.
+
+2. `pod-watch-collector` CronJob
+- collects pods, container states, and logs from Kubernetes API.
+- stores original Kubernetes log timestamps (`timestamps=true`).
+- writes pod/container/log snapshots to PostgreSQL.
+
+3. `pod-watch-resource-collector` Deployment
+- samples container CPU/RAM continuously (`SAMPLE_INTERVAL_SECONDS`, default `30`).
+- uses this order:
+  - `metrics.k8s.io`,
+  - cadvisor metrics endpoint,
+  - node summary API.
+- writes samples to `container_resource_samples`.
 
 Data flow:
-- Kubernetes API -> Collectors (sync + resource sampling) -> PostgreSQL -> Web app API -> Browser UI
 
-## Core Concepts
+Kubernetes API -> collectors -> PostgreSQL -> app API -> browser UI
 
-- `Pod health`: derived from pod phase + container readiness/status + restart behavior.
-- `Attention score`: numeric priority used for sorting (errors first, then warnings, then healthy).
-- `Initializing` state: `ContainerCreating`/`PodInitializing` are shown as non-error initialization.
-- `Root-cause focus`: pod cards and detail panel show top issue reason and log filters.
+## Database Model (high-level)
 
-## Repository Layout
+- `pods`
+- `containers`
+  - includes parsed resource requests/limits columns:
+    - `cpu_request_millicores`, `cpu_limit_millicores`
+    - `memory_request_bytes`, `memory_limit_bytes`
+- `logs`
+  - `timestamp` = log creation timestamp from Kubernetes log stream
+  - `created_at` = DB insert time
+- `container_resource_samples`
 
-- `/Users/nb/Desktop/Work/kubernetes-pod-watch/k8s/deploy-local.yaml`
-  Local development manifest with local-oriented values.
-- `/Users/nb/Desktop/Work/kubernetes-pod-watch/k8s/production/deploy.template.yaml`
-  Production manifest template (parameterized, no environment hardcoding).
-- `/Users/nb/Desktop/Work/kubernetes-pod-watch/k8s/production/.env.example`
-  Example variable file for production rendering.
-- `/Users/nb/Desktop/Work/kubernetes-pod-watch/scripts/k8s-collector.mjs`
-  Collector job implementation.
-- `/Users/nb/Desktop/Work/kubernetes-pod-watch/scripts/local-db-server.mjs`
-  API + static server used by deployed app container.
-- `/Users/nb/Desktop/Work/kubernetes-pod-watch/supabase/migrations/ext_local_schema.sql`
-  SQL schema for external PostgreSQL.
+## Repository Paths
 
-## Prerequisites (Production)
+- `k8s/deploy-local.yaml` - local cluster manifest
+- `k8s/production/deploy.template.yaml` - production template
+- `k8s/production/.env.example` - production variables example
+- `scripts/k8s-collector.mjs` - pod/status/log collector
+- `scripts/k8s-resource-collector.mjs` - CPU/RAM sampler
+- `scripts/local-db-server.mjs` - app API + static file server
+- `supabase/migrations/ext_local_schema.sql` - external PostgreSQL schema
+- `Makefile` - `prod-render` / `prod-apply` workflow
 
-- Kubernetes cluster access (`kubectl`) with permission to create namespace-scoped resources and RBAC.
-- External PostgreSQL database reachable from the cluster.
-- Container registry accessible by the cluster.
-- `docker`, `kubectl`, `envsubst` available locally.
+## Prerequisites
 
-## Required Runtime Variables
+- Kubernetes cluster + `kubectl` access
+- External PostgreSQL reachable from cluster
+- `docker`, `kubectl`, `envsubst`, `make`
 
-These are used by manifests in `/Users/nb/Desktop/Work/kubernetes-pod-watch/k8s/production/deploy.template.yaml`.
+## Local Deployment (quick)
 
-| Variable | Required | Purpose |
-|---|---|---|
-| `APP_NAMESPACE` | Yes | Namespace for app and collector resources |
-| `APP_NAME` | Yes | Base name for resources |
-| `APP_VERSION` | Yes | Version label value |
-| `APP_IMAGE` | Yes | Full image reference to deploy |
-| `APP_REPLICAS` | Yes | Number of app replicas |
-| `CONTAINER_PORT` | Yes | Container HTTP port |
-| `SERVICE_PORT` | Yes | Service port |
-| `SERVICE_TYPE` | Yes | `ClusterIP`, `NodePort`, or `LoadBalancer` |
-| `COLLECT_SCHEDULE` | Yes | Cron expression for collector |
-| `LOG_TAIL_LINES` | Yes | Number of log lines collected per container |
-| `SAMPLE_INTERVAL_SECONDS` | Yes | CPU/RAM sample interval for continuous collector |
-| `TARGET_NAMESPACE` | Yes | Namespace to inspect for pods/logs |
-| `DB_HOST` | Yes | PostgreSQL host |
-| `DB_PORT` | Yes | PostgreSQL port |
-| `DB_NAME` | Yes | PostgreSQL database |
-| `DB_USER` | Yes | PostgreSQL username |
-| `DB_PASSWORD` | Yes | PostgreSQL password (or empty string if intentionally none) |
-| `DB_SSL` | Yes | `true` or `false` |
-
-Notes:
-- The app/collector support either `DATABASE_URL` or discrete `DB_*` values in code.
-- The production template uses `DB_*` values to avoid coupling to one connection-string format.
-
-## Prepare PostgreSQL (Manual)
-
-You said DB prep will be done manually. Minimum required steps:
-
-1. Create database and user.
-2. Grant required privileges to the runtime user.
-3. Apply schema migration.
-4. Verify required enums/tables/indexes exist.
-5. (Optional) Resource sampling table is auto-created by `pod-watch-resource-collector` if missing.
-
-### 1) Create DB/User (example)
-
-```sql
-CREATE DATABASE pod_watch;
-CREATE USER pod_watch_user WITH PASSWORD 'change_me';
-GRANT CONNECT ON DATABASE pod_watch TO pod_watch_user;
-```
-
-### 2) Grant schema/table permissions (example)
-
-```sql
-\c pod_watch
-GRANT USAGE ON SCHEMA public TO pod_watch_user;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO pod_watch_user;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public
-  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO pod_watch_user;
-```
-
-### 3) Apply migration
-
-Using connection string:
+1. Build image:
 
 ```bash
-psql "postgresql://<user>:<pass>@<host>:5432/<db>?sslmode=require" \
-  -f /Users/nb/Desktop/Work/kubernetes-pod-watch/supabase/migrations/ext_local_schema.sql
+docker build -t kubernetes-pod-watch:v1.1.x .
 ```
 
-Or discrete params:
+2. Apply local manifest:
 
 ```bash
-psql -h <host> -p 5432 -U <user> -d <db> \
-  -f /Users/nb/Desktop/Work/kubernetes-pod-watch/supabase/migrations/ext_local_schema.sql
+kubectl apply -f k8s/deploy-local.yaml
+kubectl -n pod-watch rollout status deploy/pod-watch
+kubectl -n pod-watch rollout status deploy/pod-watch-resource-collector
 ```
 
-### 4) Verify objects
-
-```sql
-\c pod_watch
-\d pods
-\d containers
-\d logs
-```
-
-## Build and Push Image
+3. Open app:
 
 ```bash
-cd /Users/nb/Desktop/Work/kubernetes-pod-watch
-
-docker build -t <registry>/<org>/kubernetes-pod-watch:<version> .
-docker push <registry>/<org>/kubernetes-pod-watch:<version>
+kubectl -n pod-watch port-forward service/pod-watch 8080:8080
 ```
 
-## Render and Apply Production Manifests
+Then open `http://localhost:8080`.
 
-1. Create your variable file from template:
+## Production Deployment
 
-```bash
-cp /Users/nb/Desktop/Work/kubernetes-pod-watch/k8s/production/.env.example \
-   /Users/nb/Desktop/Work/kubernetes-pod-watch/k8s/production/.env.production
-```
-
-2. Edit `.env.production` values for your environment.
-
-3. Render manifest:
+### 1) Prepare environment file
 
 ```bash
-set -a
-source /Users/nb/Desktop/Work/kubernetes-pod-watch/k8s/production/.env.production
-set +a
-
-envsubst < /Users/nb/Desktop/Work/kubernetes-pod-watch/k8s/production/deploy.template.yaml \
-  > /Users/nb/Desktop/Work/kubernetes-pod-watch/k8s/production/deploy.rendered.yaml
-```
-
-4. Optional validate before apply:
-
-```bash
-kubectl apply --dry-run=client -f /Users/nb/Desktop/Work/kubernetes-pod-watch/k8s/production/deploy.rendered.yaml
-```
-
-5. Apply:
-
-```bash
-kubectl apply -f /Users/nb/Desktop/Work/kubernetes-pod-watch/k8s/production/deploy.rendered.yaml
-```
-
-### Make Workflow (Recommended)
-
-Use built-in make targets to reduce manual mistakes:
-
-```bash
-cd /Users/nb/Desktop/Work/kubernetes-pod-watch
-
-# one-time: create your env file
 cp k8s/production/.env.example k8s/production/.env.production
+```
 
-# render only
+Edit `k8s/production/.env.production`.
+
+Required variables:
+
+- `APP_NAMESPACE`
+- `APP_NAME`
+- `APP_VERSION`
+- `APP_IMAGE`
+- `APP_REPLICAS`
+- `CONTAINER_PORT`
+- `SERVICE_PORT`
+- `SERVICE_TYPE`
+- `COLLECT_SCHEDULE`
+- `LOG_TAIL_LINES`
+- `SAMPLE_INTERVAL_SECONDS`
+- `TARGET_NAMESPACE`
+- `DB_HOST`
+- `DB_PORT`
+- `DB_NAME`
+- `DB_USER`
+- `DB_PASSWORD`
+- `DB_SSL`
+
+### 2) Render and apply (recommended)
+
+```bash
 make prod-render
-
-# render + validate + apply
 make prod-apply
 ```
 
-Optional overrides:
+Optional:
 
 ```bash
 make prod-render ENV_FILE=k8s/production/.env.staging
-make prod-apply ENV_FILE=k8s/production/.env.prod-eu RENDERED_FILE=/tmp/pod-watch.prod-eu.yaml
+make prod-apply ENV_FILE=k8s/production/.env.prod RENDERED_FILE=/tmp/pod-watch.prod.yaml
 ```
 
-## Post-Deploy Verification
+### 3) Verify
 
 ```bash
 kubectl get all -n <APP_NAMESPACE>
 kubectl rollout status deployment/<APP_NAME> -n <APP_NAMESPACE>
+kubectl rollout status deployment/<APP_NAME>-resource-collector -n <APP_NAMESPACE>
 kubectl get cronjob -n <APP_NAMESPACE>
 ```
 
-Trigger one collector run immediately:
+Trigger one collector run:
 
 ```bash
 kubectl create job --from=cronjob/<APP_NAME>-collector <APP_NAME>-collector-manual -n <APP_NAMESPACE>
 kubectl logs job/<APP_NAME>-collector-manual -n <APP_NAMESPACE>
 ```
 
-Expected collector success output contains:
-- `Sync complete namespace=<TARGET_NAMESPACE> pods=<n> containers=<n> logs=<n>`
+## PostgreSQL Preparation (manual)
 
-## Accessing the UI
-
-If service is `ClusterIP`:
+Apply schema:
 
 ```bash
-kubectl port-forward -n <APP_NAMESPACE> service/<APP_NAME> 8080:<SERVICE_PORT>
+psql -h <host> -p <port> -U <user> -d <db> \
+  -f supabase/migrations/ext_local_schema.sql
 ```
 
-Open: `http://localhost:8080`
+Minimal permissions needed by runtime DB user:
+- read/write on `pods`, `containers`, `logs`, `container_resource_samples`
+- create index/table capability if you rely on collector self-healing schema changes
 
-If service is `LoadBalancer`/`NodePort`, use the cluster-provided endpoint.
+Notes:
+- Resource sampler also ensures `container_resource_samples` exists if missing.
+- Production template uses `DB_*` parameters (no hardcoded in-cluster values).
 
-## Operations Notes
+## UI Navigation
 
-- App polling intervals:
-  - Pods/containers: 30s
-  - Logs: 10s
-- Collector schedule is independent from UI polling.
-- If you change image tag or labels, update `.env.production` and re-render/apply.
-- Keep secrets out of Git (`.env.production` and rendered files should stay local/private).
+- Dashboard: `/`
+  - deployment cards, pod cards, container panel + logs/resources tabs
+  - impact badges on deployment/pod/container levels
+- Version Impact: `/version-impact`
+  - detailed tables/charts for version-to-version resource comparison
 
 ## Troubleshooting
 
-1. UI blank page / empty response
-- Ensure no stale process hijacks `localhost:8080`.
-- Check service and port-forward status.
+1. No data in UI
+- check collector job logs
+- verify `TARGET_NAMESPACE`
+- verify DB connectivity from pods
 
-2. No pod data in UI
-- Check collector job logs.
-- Validate DB connectivity from collector pod.
-- Confirm `TARGET_NAMESPACE` is correct.
+2. No resource graphs / no CPU-RAM %
+- check resource collector logs
+- ensure container limits are set for percentage display
+- verify samples exist in `container_resource_samples`
 
-3. Permission errors reading pods/logs
-- Verify `ClusterRole` and `ClusterRoleBinding` were applied.
-- Confirm service account bound to collector/app pods.
+3. Kubernetes API permission errors
+- verify `ClusterRole` and `ClusterRoleBinding`
+- verify service account on app and collectors
 
-4. Postgres auth/SSL failures
-- Verify `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_SSL`.
-- Ensure network/firewall allows cluster egress to DB.
+4. DB auth/SSL failures
+- verify `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_SSL`
+- verify network policy/firewall from cluster to PostgreSQL
