@@ -94,9 +94,10 @@ export async function fetchPodsAndContainers(): Promise<{
 }
 
 // Fetch logs for a specific container
-export async function fetchContainerLogs(containerId: string): Promise<DbLog[]> {
+export async function fetchContainerLogs(containerId: string, limit = 2000): Promise<DbLog[]> {
+  const boundedLimit = Math.max(1, Math.min(limit, 5000));
   const response = await fetch(
-    `${getBaseUrl()}?action=getLogs&containerId=${encodeURIComponent(containerId)}`,
+    `${getBaseUrl()}?action=getLogs&containerId=${encodeURIComponent(containerId)}&limit=${boundedLimit}`,
     { headers: getAuthHeaders() }
   );
 

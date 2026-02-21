@@ -1,10 +1,28 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { Pool } from "https://deno.land/x/postgres@v0.17.0/mod.ts";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
+const CORS_ALLOW_ORIGIN = Deno.env.get("CORS_ALLOW_ORIGIN") ?? "";
+const LOG_QUERY_LIMIT_DEFAULT = parseInt(Deno.env.get("LOG_QUERY_LIMIT_DEFAULT") ?? "2000", 10);
+const LOG_QUERY_LIMIT_MAX = parseInt(Deno.env.get("LOG_QUERY_LIMIT_MAX") ?? "5000", 10);
+
+function resolveAllowedOrigin(origin: string | null): string {
+  if (!CORS_ALLOW_ORIGIN) return "*";
+  if (!origin) return CORS_ALLOW_ORIGIN;
+  return origin === CORS_ALLOW_ORIGIN ? origin : CORS_ALLOW_ORIGIN;
+}
+
+function buildCorsHeaders(origin: string | null) {
+  return {
+    "Access-Control-Allow-Origin": resolveAllowedOrigin(origin),
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  };
+}
+
+function parseLogLimit(raw: string | null): number {
+  const parsed = raw ? parseInt(raw, 10) : LOG_QUERY_LIMIT_DEFAULT;
+  if (!Number.isFinite(parsed) || parsed <= 0) return LOG_QUERY_LIMIT_DEFAULT;
+  return Math.min(parsed, LOG_QUERY_LIMIT_MAX);
+}
 
 // Database connection configuration from environment variables
 const databaseUrl = Deno.env.get("DATABASE_URL");
@@ -42,6 +60,7 @@ function getPool(): Pool {
 }
 
 serve(async (req) => {
+  const corsHeaders = buildCorsHeaders(req.headers.get("origin"));
   // Handle CORS preflight
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -101,6 +120,7 @@ serve(async (req) => {
         if (!containerId) {
           throw new Error("containerId is required");
         }
+        const limit = parseLogLimit(url.searchParams.get("limit"));
 
         const connection = await pool.connect();
         try {
@@ -108,10 +128,11 @@ serve(async (req) => {
             SELECT id, container_id, timestamp, level, message, created_at
             FROM logs
             WHERE container_id = $1
-            ORDER BY timestamp ASC
-          `, [containerId]);
+            ORDER BY timestamp DESC
+            LIMIT $2
+          `, [containerId, limit]);
 
-          result = { logs: logsResult.rows };
+          result = { logs: [...logsResult.rows].reverse() };
         } finally {
           connection.release();
         }

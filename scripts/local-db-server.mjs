@@ -33,6 +33,9 @@ const DB_PASSWORD = process.env.DB_PASSWORD || '';
 const DB_SSL = process.env.DB_SSL === 'true';
 const PORT = parseInt(process.env.API_PORT || process.env.PORT || '54321', 10);
 const STATIC_DIR = process.env.STATIC_DIR;
+const CORS_ALLOW_ORIGIN = process.env.CORS_ALLOW_ORIGIN || '';
+const LOG_QUERY_LIMIT_DEFAULT = parseInt(process.env.LOG_QUERY_LIMIT_DEFAULT || '2000', 10);
+const LOG_QUERY_LIMIT_MAX = parseInt(process.env.LOG_QUERY_LIMIT_MAX || '5000', 10);
 
 if (!DB_URL && !(DB_HOST && DB_NAME && DB_USER)) {
   console.error('Error: set DATABASE_URL or DB_HOST/DB_NAME/DB_USER');
@@ -52,11 +55,26 @@ const pool = new Pool(
       }
 );
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-  'Content-Type': 'application/json',
+const securityHeaders = {
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+  'Referrer-Policy': 'no-referrer',
 };
+
+function resolveAllowedOrigin(originHeader) {
+  if (!CORS_ALLOW_ORIGIN) return '*';
+  if (!originHeader) return CORS_ALLOW_ORIGIN;
+  return originHeader === CORS_ALLOW_ORIGIN ? originHeader : CORS_ALLOW_ORIGIN;
+}
+
+function buildCorsHeaders(originHeader) {
+  return {
+    ...securityHeaders,
+    'Access-Control-Allow-Origin': resolveAllowedOrigin(originHeader),
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+    'Content-Type': 'application/json',
+  };
+}
 
 const mimeTypes = new Map([
   ['.html', 'text/html; charset=utf-8'],
@@ -89,7 +107,7 @@ function serveStatic(req, res, urlPath) {
   const filePath = path.resolve(path.join(staticRoot, safePath));
 
   if (!(filePath === path.join(staticRoot, 'index.html') || isPathInsideRoot(staticRoot, filePath))) {
-    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.writeHead(403, { ...securityHeaders, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Forbidden' }));
     return true;
   }
@@ -100,12 +118,20 @@ function serveStatic(req, res, urlPath) {
 
   const ext = path.extname(selected).toLowerCase();
   const contentType = mimeTypes.get(ext) || 'application/octet-stream';
-  res.writeHead(200, { 'Content-Type': contentType });
+  res.writeHead(200, { ...securityHeaders, 'Content-Type': contentType });
   createReadStream(selected).pipe(res);
   return true;
 }
 
+function parseLogLimit(url) {
+  const raw = url.searchParams.get('limit');
+  const parsed = raw ? parseInt(raw, 10) : LOG_QUERY_LIMIT_DEFAULT;
+  if (!Number.isFinite(parsed) || parsed <= 0) return LOG_QUERY_LIMIT_DEFAULT;
+  return Math.min(parsed, LOG_QUERY_LIMIT_MAX);
+}
+
 const server = createServer(async (req, res) => {
+  const corsHeaders = buildCorsHeaders(req.headers.origin);
   if (req.method === 'OPTIONS') {
     res.writeHead(204, corsHeaders);
     res.end();
@@ -160,12 +186,13 @@ const server = createServer(async (req, res) => {
       case 'getLogs': {
         const containerId = url.searchParams.get('containerId');
         if (!containerId) throw new Error('containerId is required');
+        const limit = parseLogLimit(url);
         const logsRes = await pool.query(
           `SELECT id, container_id, timestamp, level, message, created_at
-           FROM logs WHERE container_id = $1 ORDER BY timestamp ASC`,
-          [containerId]
+           FROM logs WHERE container_id = $1 ORDER BY timestamp DESC LIMIT $2`,
+          [containerId, limit]
         );
-        result = { logs: logsRes.rows };
+        result = { logs: [...logsRes.rows].reverse() };
         break;
       }
       case 'getResourceSamples': {

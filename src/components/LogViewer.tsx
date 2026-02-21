@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Container, LogEntry } from '@/types/kubernetes';
 import { useContainerLogs, useContainerResourceSamples } from '@/hooks/useKubernetesData';
 import { cn } from '@/lib/utils';
@@ -18,7 +18,6 @@ export const LogViewer = ({ container }: LogViewerProps) => {
   const [quickFilter, setQuickFilter] = useState<'all' | 'error' | 'warning' | 'exception'>('all');
   const [autoScroll, setAutoScroll] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const logsEndRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -53,20 +52,27 @@ export const LogViewer = ({ container }: LogViewerProps) => {
     );
   };
 
-  const exceptionCount = logs.filter((log) => hasStackTracePattern(log.message)).length;
-  const errorCount = logs.filter((log) => log.level === 'error').length;
-  const warningCount = logs.filter((log) => log.level === 'warn').length;
+  const exceptionCount = useMemo(
+    () => logs.filter((log) => hasStackTracePattern(log.message)).length,
+    [logs]
+  );
+  const errorCount = useMemo(() => logs.filter((log) => log.level === 'error').length, [logs]);
+  const warningCount = useMemo(() => logs.filter((log) => log.level === 'warn').length, [logs]);
 
-  const filteredLogs = logs.filter((log) => {
-    const matchesSearch = log.message.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesQuickFilter =
-      quickFilter === 'all' ||
-      (quickFilter === 'error' && log.level === 'error') ||
-      (quickFilter === 'warning' && log.level === 'warn') ||
-      (quickFilter === 'exception' && hasStackTracePattern(log.message));
+  const filteredLogs = useMemo(
+    () =>
+      logs.filter((log) => {
+        const matchesSearch = log.message.toLowerCase().includes(searchTerm.toLowerCase());
+        const matchesQuickFilter =
+          quickFilter === 'all' ||
+          (quickFilter === 'error' && log.level === 'error') ||
+          (quickFilter === 'warning' && log.level === 'warn') ||
+          (quickFilter === 'exception' && hasStackTracePattern(log.message));
 
-    return matchesSearch && matchesQuickFilter;
-  });
+        return matchesSearch && matchesQuickFilter;
+      }),
+    [logs, quickFilter, searchTerm]
+  );
 
   const handleScroll = () => {
     if (containerRef.current) {
@@ -104,22 +110,36 @@ export const LogViewer = ({ container }: LogViewerProps) => {
     URL.revokeObjectURL(url);
   };
 
+  const sortedResourceSamples = useMemo(
+    () =>
+      [...resourceSamples].sort(
+        (a, b) => new Date(a.sampledAt).getTime() - new Date(b.sampledAt).getTime()
+      ),
+    [resourceSamples]
+  );
+
   const findNearestResourceSample = (logTs: string) => {
-    if (resourceSamples.length === 0) return null;
+    if (sortedResourceSamples.length === 0) return null;
     const targetMs = new Date(logTs).getTime();
     if (!Number.isFinite(targetMs)) return null;
 
-    let best = resourceSamples[0];
-    let bestDelta = Math.abs(new Date(best.sampledAt).getTime() - targetMs);
-    for (let i = 1; i < resourceSamples.length; i += 1) {
-      const candidate = resourceSamples[i];
-      const delta = Math.abs(new Date(candidate.sampledAt).getTime() - targetMs);
-      if (delta < bestDelta) {
-        best = candidate;
-        bestDelta = delta;
-      }
+    let low = 0;
+    let high = sortedResourceSamples.length - 1;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      const midTs = new Date(sortedResourceSamples[mid].sampledAt).getTime();
+      if (midTs < targetMs) low = mid + 1;
+      else high = mid - 1;
     }
-    return best;
+
+    const left = high >= 0 ? sortedResourceSamples[high] : null;
+    const right = low < sortedResourceSamples.length ? sortedResourceSamples[low] : null;
+    if (!left) return right;
+    if (!right) return left;
+
+    const leftDelta = Math.abs(new Date(left.sampledAt).getTime() - targetMs);
+    const rightDelta = Math.abs(new Date(right.sampledAt).getTime() - targetMs);
+    return leftDelta <= rightDelta ? left : right;
   };
 
   const formatPercent = (value: number) => `${value.toFixed(1)}%`;
@@ -317,7 +337,6 @@ export const LogViewer = ({ container }: LogViewerProps) => {
         ) : (
           <div className="py-2">
             {filteredLogs.map(renderLogLine)}
-            <div ref={logsEndRef} />
           </div>
         )}
       </div>

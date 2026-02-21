@@ -10,6 +10,7 @@ const K8S_HOST = process.env.K8S_HOST || process.env.KUBERNETES_SERVICE_HOST || 
 const K8S_PORT = process.env.K8S_PORT || process.env.KUBERNETES_SERVICE_PORT || '443';
 const TARGET_NAMESPACE = process.env.TARGET_NAMESPACE || process.env.POD_NAMESPACE || 'default';
 const LOG_TAIL_LINES = parseInt(process.env.LOG_TAIL_LINES || '100', 10);
+const MAX_LOG_MESSAGE_LENGTH = parseInt(process.env.MAX_LOG_MESSAGE_LENGTH || '8192', 10);
 
 const SA_TOKEN_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/token';
 const SA_CA_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/ca.crt';
@@ -381,21 +382,27 @@ async function main() {
               .filter(Boolean)
               .slice(-LOG_TAIL_LINES);
 
+            const timestamps = [];
+            const levels = [];
+            const messages = [];
+
             for (const rawLine of lines) {
               const parsed = parseK8sLogLine(rawLine);
               if (!parsed.message) continue;
-              await db.query(
+              timestamps.push(parsed.timestamp);
+              levels.push(inferLogLevel(parsed.message));
+              messages.push(parsed.message.slice(0, MAX_LOG_MESSAGE_LENGTH));
+            }
+
+            if (messages.length > 0) {
+              const insertResult = await db.query(
                 `INSERT INTO logs (container_id, timestamp, level, message)
-                 VALUES ($1, $2, $3, $4)
+                 SELECT $1, t.ts::timestamptz, t.lvl::log_level, t.msg
+                 FROM unnest($2::text[], $3::text[], $4::text[]) AS t(ts, lvl, msg)
                  ON CONFLICT (container_id, timestamp, message) DO NOTHING`,
-                [
-                  containerId,
-                  parsed.timestamp,
-                  inferLogLevel(parsed.message),
-                  parsed.message,
-                ]
+                [containerId, timestamps, levels, messages]
               );
-              logCount += 1;
+              logCount += insertResult.rowCount || 0;
             }
           } catch (error) {
             console.warn(`Skipping logs for ${pod.metadata?.name}/${cs.name}:`, error.message);

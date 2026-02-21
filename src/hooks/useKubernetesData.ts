@@ -113,7 +113,7 @@ export const useContainerLogs = (containerId: string | null) => {
     queryKey: ['logs', containerId],
     queryFn: async (): Promise<LogEntry[]> => {
       if (!containerId) return [];
-      const logs = await fetchContainerLogs(containerId);
+      const logs = await fetchContainerLogs(containerId, 2000);
       return logs.map(transformLog);
     },
     enabled: !!containerId,
