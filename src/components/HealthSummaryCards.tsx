@@ -7,6 +7,7 @@ interface HealthSummaryCardsProps {
   versionGroups: VersionGroup[];
   onFilterHealth: (health: 'all' | 'healthy' | 'warning' | 'error') => void;
   activeFilter: 'all' | 'healthy' | 'warning' | 'error';
+  totalLabel?: string;
 }
 
 export const HealthSummaryCards = ({
@@ -14,6 +15,7 @@ export const HealthSummaryCards = ({
   versionGroups,
   onFilterHealth,
   activeFilter,
+  totalLabel = 'Total Pods',
 }: HealthSummaryCardsProps) => {
   const healthyCounts = pods.filter((p) => p.health === 'healthy').length;
   const warningCount = pods.filter((p) => p.health === 'warning').length;
@@ -25,7 +27,7 @@ export const HealthSummaryCards = ({
   const cards = [
     {
       key: 'all' as const,
-      label: 'Total Pods',
+      label: totalLabel,
       count: totalPods,
       icon: Box,
       bgClass: 'bg-primary/10',

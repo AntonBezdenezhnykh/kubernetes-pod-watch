@@ -38,9 +38,19 @@ CREATE TABLE IF NOT EXISTS public.containers (
     last_state_reason TEXT,
     last_state_exit_code INTEGER,
     last_state_message TEXT,
+    cpu_request_millicores INTEGER,
+    cpu_limit_millicores INTEGER,
+    memory_request_bytes BIGINT,
+    memory_limit_bytes BIGINT,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
 );
+
+ALTER TABLE public.containers
+    ADD COLUMN IF NOT EXISTS cpu_request_millicores INTEGER,
+    ADD COLUMN IF NOT EXISTS cpu_limit_millicores INTEGER,
+    ADD COLUMN IF NOT EXISTS memory_request_bytes BIGINT,
+    ADD COLUMN IF NOT EXISTS memory_limit_bytes BIGINT;
 
 -- Create logs table
 CREATE TABLE IF NOT EXISTS public.logs (
@@ -91,3 +101,11 @@ CREATE INDEX IF NOT EXISTS idx_pods_status ON public.pods(status);
 CREATE INDEX IF NOT EXISTS idx_containers_pod_id ON public.containers(pod_id);
 CREATE INDEX IF NOT EXISTS idx_logs_container_id ON public.logs(container_id);
 CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON public.logs(timestamp DESC);
+DELETE FROM public.logs a
+USING public.logs b
+WHERE a.ctid < b.ctid
+  AND a.container_id = b.container_id
+  AND a.timestamp = b.timestamp
+  AND a.message = b.message;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_logs_container_timestamp_message
+    ON public.logs(container_id, timestamp, message);

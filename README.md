@@ -21,8 +21,13 @@ The system has two runtime components:
 - Pulls pods, container states, and recent logs from the target namespace.
 - Writes/upserts into external PostgreSQL.
 
+3. `pod-watch-resource-collector` (Deployment)
+- Runs continuously and samples container CPU/RAM usage every `SAMPLE_INTERVAL_SECONDS` (default `30`).
+- Uses `metrics.k8s.io` when available, otherwise falls back to node summary API.
+- Writes samples to `container_resource_samples` in external PostgreSQL.
+
 Data flow:
-- Kubernetes API -> Collector CronJob -> PostgreSQL -> Web app API -> Browser UI
+- Kubernetes API -> Collectors (sync + resource sampling) -> PostgreSQL -> Web app API -> Browser UI
 
 ## Core Concepts
 
@@ -69,6 +74,7 @@ These are used by manifests in `/Users/nb/Desktop/Work/kubernetes-pod-watch/k8s/
 | `SERVICE_TYPE` | Yes | `ClusterIP`, `NodePort`, or `LoadBalancer` |
 | `COLLECT_SCHEDULE` | Yes | Cron expression for collector |
 | `LOG_TAIL_LINES` | Yes | Number of log lines collected per container |
+| `SAMPLE_INTERVAL_SECONDS` | Yes | CPU/RAM sample interval for continuous collector |
 | `TARGET_NAMESPACE` | Yes | Namespace to inspect for pods/logs |
 | `DB_HOST` | Yes | PostgreSQL host |
 | `DB_PORT` | Yes | PostgreSQL port |
@@ -89,6 +95,7 @@ You said DB prep will be done manually. Minimum required steps:
 2. Grant required privileges to the runtime user.
 3. Apply schema migration.
 4. Verify required enums/tables/indexes exist.
+5. (Optional) Resource sampling table is auto-created by `pod-watch-resource-collector` if missing.
 
 ### 1) Create DB/User (example)
 

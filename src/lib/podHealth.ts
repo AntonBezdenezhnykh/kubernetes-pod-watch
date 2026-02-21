@@ -6,6 +6,7 @@ import {
   LogEntry,
   Container,
   ContainerSeverity,
+  DeploymentGroup,
 } from '@/types/kubernetes';
 
 const INITIALIZING_REASONS = new Set(['ContainerCreating', 'PodInitializing']);
@@ -31,6 +32,31 @@ export const isSidecarContainer = (container: Container): boolean => {
 
   // Common fallback pattern for generic sidecars
   return name.includes('sidecar');
+};
+
+export const extractDeploymentName = (pod: Pod): string => {
+  const deploymentLabelKeys = [
+    'app.kubernetes.io/name',
+    'app.kubernetes.io/instance',
+    'app',
+    'k8s-app',
+  ];
+
+  for (const key of deploymentLabelKeys) {
+    const value = pod.labels[key];
+    if (value && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+
+  const name = pod.name;
+  const deploymentStyleMatch = name.match(/^(.*)-[a-f0-9]{8,10}-[a-z0-9]{5}$/);
+  if (deploymentStyleMatch?.[1]) return deploymentStyleMatch[1];
+
+  const statefulSetStyleMatch = name.match(/^(.*)-\d+$/);
+  if (statefulSetStyleMatch?.[1]) return statefulSetStyleMatch[1];
+
+  return name;
 };
 
 export const classifyContainerSeverity = (
@@ -173,6 +199,7 @@ export const enrichPodWithHealth = (
     hasLogErrors,
     attentionScore: computed.attentionScore,
     attentionReason: computed.attentionReason,
+    deploymentName: extractDeploymentName(pod),
   };
 };
 
@@ -227,6 +254,60 @@ export const sortPodsByHealth = (pods: PodWithHealth[]): PodWithHealth[] => {
     if (attentionDiff !== 0) return attentionDiff;
     // Within same health, sort by most recent
     return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+  });
+};
+
+export const sortPodsByCreatedDesc = (pods: PodWithHealth[]): PodWithHealth[] => {
+  return [...pods].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  );
+};
+
+export const groupPodsByDeployment = (pods: PodWithHealth[]): DeploymentGroup[] => {
+  const grouped = new Map<string, PodWithHealth[]>();
+
+  for (const pod of pods) {
+    const key = pod.deploymentName || 'unknown';
+    const list = grouped.get(key) ?? [];
+    list.push(pod);
+    grouped.set(key, list);
+  }
+
+  const healthPriority: Record<HealthStatus, number> = {
+    error: 0,
+    warning: 1,
+    healthy: 2,
+  };
+
+  const deployments: DeploymentGroup[] = [];
+  for (const [name, deploymentPods] of grouped.entries()) {
+    const podsSorted = sortPodsByCreatedDesc(deploymentPods);
+    const healthSummary = {
+      healthy: podsSorted.filter((pod) => pod.health === 'healthy').length,
+      warning: podsSorted.filter((pod) => pod.health === 'warning').length,
+      error: podsSorted.filter((pod) => pod.health === 'error').length,
+    };
+    const health: HealthStatus =
+      healthSummary.error > 0 ? 'error' : healthSummary.warning > 0 ? 'warning' : 'healthy';
+    const attentionScore = podsSorted.reduce((max, pod) => Math.max(max, pod.attentionScore), 0);
+
+    deployments.push({
+      id: name,
+      name,
+      pods: podsSorted,
+      health,
+      attentionScore,
+      latestCreatedAt: podsSorted[0]?.createdAt ?? new Date(0).toISOString(),
+      healthSummary,
+    });
+  }
+
+  return deployments.sort((a, b) => {
+    const healthDiff = healthPriority[a.health] - healthPriority[b.health];
+    if (healthDiff !== 0) return healthDiff;
+    const scoreDiff = b.attentionScore - a.attentionScore;
+    if (scoreDiff !== 0) return scoreDiff;
+    return new Date(b.latestCreatedAt).getTime() - new Date(a.latestCreatedAt).getTime();
   });
 };
 

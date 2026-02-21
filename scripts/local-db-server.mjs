@@ -133,10 +133,28 @@ const server = createServer(async (req, res) => {
         `);
         const containersRes = await pool.query(`
           SELECT id, pod_id, name, image, status, ready, restart_count, started_at,
-                 last_state_reason, last_state_exit_code, last_state_message, created_at, updated_at
+                 last_state_reason, last_state_exit_code, last_state_message,
+                 cpu_request_millicores, cpu_limit_millicores, memory_request_bytes, memory_limit_bytes,
+                 created_at, updated_at
           FROM containers
         `);
-        result = { pods: podsRes.rows, containers: containersRes.rows };
+        const podLogSummariesRes = await pool.query(`
+          SELECT
+            c.pod_id,
+            COUNT(*) FILTER (WHERE l.level = 'error')::int AS error_count,
+            COUNT(*) FILTER (WHERE l.level = 'warn')::int AS warning_count,
+            COUNT(*) FILTER (
+              WHERE l.message ~* '(exception|stacktrace|traceback|(^|\\s)at\\s+\\S+)'
+            )::int AS exception_count
+          FROM logs l
+          JOIN containers c ON c.id = l.container_id
+          GROUP BY c.pod_id
+        `);
+        result = {
+          pods: podsRes.rows,
+          containers: containersRes.rows,
+          podLogSummaries: podLogSummariesRes.rows,
+        };
         break;
       }
       case 'getLogs': {
@@ -148,6 +166,29 @@ const server = createServer(async (req, res) => {
           [containerId]
         );
         result = { logs: logsRes.rows };
+        break;
+      }
+      case 'getResourceSamples': {
+        const containerId = url.searchParams.get('containerId');
+        if (!containerId) throw new Error('containerId is required');
+        let samplesRes;
+        try {
+          samplesRes = await pool.query(
+            `SELECT sampled_at, cpu_millicores, memory_bytes
+             FROM container_resource_samples
+             WHERE container_id = $1
+             ORDER BY sampled_at DESC
+             LIMIT 120`,
+            [containerId]
+          );
+        } catch (error) {
+          if (String(error?.message || '').includes('container_resource_samples')) {
+            samplesRes = { rows: [] };
+          } else {
+            throw error;
+          }
+        }
+        result = { samples: [...samplesRes.rows].reverse() };
         break;
       }
       case 'health': {

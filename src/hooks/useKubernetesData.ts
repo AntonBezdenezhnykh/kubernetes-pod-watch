@@ -1,15 +1,28 @@
 import { useQuery } from '@tanstack/react-query';
-import { Pod, Container, LogEntry } from '@/types/kubernetes';
+import { Pod, Container, LogEntry, ResourceSample } from '@/types/kubernetes';
 import {
   fetchPodsAndContainers,
   fetchContainerLogs,
+  fetchContainerResourceSamples,
   DbPod,
   DbContainer,
   DbLog,
+  DbPodLogSummary,
+  DbResourceSample,
 } from '@/lib/database';
 
+const toNumberOrNull = (value: unknown): number | null => {
+  if (value === null || value === undefined) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
 // Transform database pod to frontend Pod type
-const transformPod = (dbPod: DbPod, containers: Container[]): Pod => ({
+const transformPod = (
+  dbPod: DbPod,
+  containers: Container[],
+  summary?: DbPodLogSummary
+): Pod => ({
   id: dbPod.id,
   name: dbPod.name,
   namespace: dbPod.namespace,
@@ -20,6 +33,11 @@ const transformPod = (dbPod: DbPod, containers: Container[]): Pod => ({
   containers,
   labels: (dbPod.labels as Record<string, string>) ?? {},
   restarts: dbPod.restarts ?? 0,
+  logSummary: {
+    errors: summary?.error_count ?? 0,
+    warnings: summary?.warning_count ?? 0,
+    exceptions: summary?.exception_count ?? 0,
+  },
 });
 
 // Transform database container to frontend Container type
@@ -38,6 +56,10 @@ const transformContainer = (dbContainer: DbContainer): Container => ({
         message: dbContainer.last_state_message ?? undefined,
       }
     : undefined,
+  cpuRequestMillicores: toNumberOrNull(dbContainer.cpu_request_millicores),
+  cpuLimitMillicores: toNumberOrNull(dbContainer.cpu_limit_millicores),
+  memoryRequestBytes: toNumberOrNull(dbContainer.memory_request_bytes),
+  memoryLimitBytes: toNumberOrNull(dbContainer.memory_limit_bytes),
 });
 
 // Transform database log to frontend LogEntry type
@@ -48,11 +70,17 @@ const transformLog = (dbLog: DbLog): LogEntry => ({
   message: dbLog.message,
 });
 
+const transformResourceSample = (dbSample: DbResourceSample): ResourceSample => ({
+  sampledAt: dbSample.sampled_at,
+  cpuMillicores: toNumberOrNull(dbSample.cpu_millicores) ?? 0,
+  memoryBytes: toNumberOrNull(dbSample.memory_bytes) ?? 0,
+});
+
 export const usePods = () => {
   return useQuery({
     queryKey: ['pods'],
     queryFn: async (): Promise<Pod[]> => {
-      const { pods, containers } = await fetchPodsAndContainers();
+      const { pods, containers, podLogSummaries } = await fetchPodsAndContainers();
 
       const containersByPodId = containers.reduce<Record<string, Container[]>>(
         (acc, container) => {
@@ -64,8 +92,16 @@ export const usePods = () => {
         {}
       );
 
+      const summaryByPodId = podLogSummaries.reduce<Record<string, DbPodLogSummary>>(
+        (acc, summary) => {
+          acc[summary.pod_id] = summary;
+          return acc;
+        },
+        {}
+      );
+
       return pods.map((pod) =>
-        transformPod(pod, containersByPodId[pod.id] ?? [])
+        transformPod(pod, containersByPodId[pod.id] ?? [], summaryByPodId[pod.id])
       );
     },
     refetchInterval: 30000,
@@ -82,5 +118,18 @@ export const useContainerLogs = (containerId: string | null) => {
     },
     enabled: !!containerId,
     refetchInterval: 10000,
+  });
+};
+
+export const useContainerResourceSamples = (containerId: string | null) => {
+  return useQuery({
+    queryKey: ['resource-samples', containerId],
+    queryFn: async (): Promise<ResourceSample[]> => {
+      if (!containerId) return [];
+      const samples = await fetchContainerResourceSamples(containerId);
+      return samples.map(transformResourceSample);
+    },
+    enabled: !!containerId,
+    refetchInterval: 30000,
   });
 };

@@ -10,27 +10,31 @@ metadata:
   namespace: pod-watch
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+kind: ClusterRole
 metadata:
   name: pod-watch-reader
-  namespace: pod-watch
 rules:
   - apiGroups: [""]
     resources: ["pods", "pods/log"]
     verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["nodes", "nodes/proxy"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
+kind: ClusterRoleBinding
 metadata:
   name: pod-watch-reader-binding
-  namespace: pod-watch
 subjects:
   - kind: ServiceAccount
     name: pod-watch-sa
     namespace: pod-watch
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: Role
+  kind: ClusterRole
   name: pod-watch-reader
 ---
 apiVersion: apps/v1
@@ -40,7 +44,7 @@ metadata:
   namespace: pod-watch
   labels:
     app.kubernetes.io/name: pod-watch
-    app.kubernetes.io/version: "1.0.3"
+    app.kubernetes.io/version: "1.1.5"
 spec:
   replicas: 1
   selector:
@@ -51,12 +55,12 @@ spec:
       labels:
         app: pod-watch
         app.kubernetes.io/name: pod-watch
-        app.kubernetes.io/version: "1.0.3"
+        app.kubernetes.io/version: "1.1.5"
     spec:
       serviceAccountName: pod-watch-sa
       containers:
         - name: app
-          image: kubernetes-pod-watch:v1.0.3
+          image: kubernetes-pod-watch:v1.1.5
           imagePullPolicy: IfNotPresent
           env:
             - name: DB_HOST
@@ -103,7 +107,7 @@ metadata:
   namespace: pod-watch
   labels:
     app.kubernetes.io/name: pod-watch-collector
-    app.kubernetes.io/version: "1.0.3"
+    app.kubernetes.io/version: "1.1.5"
 spec:
   schedule: "*/2 * * * *"
   successfulJobsHistoryLimit: 2
@@ -115,13 +119,13 @@ spec:
           labels:
             app: pod-watch-collector
             app.kubernetes.io/name: pod-watch-collector
-            app.kubernetes.io/version: "1.0.3"
+            app.kubernetes.io/version: "1.1.5"
         spec:
           serviceAccountName: pod-watch-sa
           restartPolicy: OnFailure
           containers:
             - name: collector
-              image: kubernetes-pod-watch:v1.0.3
+              image: kubernetes-pod-watch:v1.1.5
               imagePullPolicy: IfNotPresent
               command: ["node", "scripts/k8s-collector.mjs"]
               env:
@@ -141,3 +145,48 @@ spec:
                   value: ""
                 - name: DB_SSL
                   value: "false"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pod-watch-resource-collector
+  namespace: pod-watch
+  labels:
+    app.kubernetes.io/name: pod-watch-resource-collector
+    app.kubernetes.io/version: "1.1.5"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pod-watch-resource-collector
+  template:
+    metadata:
+      labels:
+        app: pod-watch-resource-collector
+        app.kubernetes.io/name: pod-watch-resource-collector
+        app.kubernetes.io/version: "1.1.5"
+    spec:
+      serviceAccountName: pod-watch-sa
+      restartPolicy: Always
+      containers:
+        - name: resource-collector
+          image: kubernetes-pod-watch:v1.1.5
+          imagePullPolicy: IfNotPresent
+          command: ["node", "scripts/k8s-resource-collector.mjs"]
+          env:
+            - name: TARGET_NAMESPACE
+              value: pod-watch
+            - name: SAMPLE_INTERVAL_SECONDS
+              value: "30"
+            - name: DB_HOST
+              value: host.docker.internal
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              value: postgres
+            - name: DB_USER
+              value: postgres
+            - name: DB_PASSWORD
+              value: ""
+            - name: DB_SSL
+              value: "false"

@@ -53,6 +53,73 @@ function inferLogLevel(message) {
   return 'info';
 }
 
+function parseCpuToMillicores(quantity) {
+  if (!quantity) return null;
+  const value = String(quantity).trim();
+  if (!value) return null;
+  if (value.endsWith('n')) {
+    return Math.round(parseFloat(value.slice(0, -1)) / 1_000_000);
+  }
+  if (value.endsWith('u')) {
+    return Math.round(parseFloat(value.slice(0, -1)) / 1_000);
+  }
+  if (value.endsWith('m')) {
+    return Math.round(parseFloat(value.slice(0, -1)));
+  }
+  const parsed = parseFloat(value);
+  if (Number.isNaN(parsed)) return null;
+  return Math.round(parsed * 1000);
+}
+
+function parseMemoryToBytes(quantity) {
+  if (!quantity) return null;
+  const value = String(quantity).trim();
+  if (!value) return null;
+  const match = value.match(/^([0-9.]+)([a-zA-Z]+)?$/);
+  if (!match) return null;
+  const num = parseFloat(match[1]);
+  if (Number.isNaN(num)) return null;
+  const unit = (match[2] || '').toUpperCase();
+
+  const binary = {
+    KI: 1024,
+    MI: 1024 ** 2,
+    GI: 1024 ** 3,
+    TI: 1024 ** 4,
+    PI: 1024 ** 5,
+    EI: 1024 ** 6,
+  };
+  const decimal = {
+    K: 1000,
+    M: 1000 ** 2,
+    G: 1000 ** 3,
+    T: 1000 ** 4,
+    P: 1000 ** 5,
+    E: 1000 ** 6,
+  };
+
+  if (binary[unit]) return Math.round(num * binary[unit]);
+  if (decimal[unit]) return Math.round(num * decimal[unit]);
+  return Math.round(num);
+}
+
+function parseK8sLogLine(line) {
+  const match = line.match(/^(\d{4}-\d{2}-\d{2}T[^\s]+)\s(.*)$/);
+  if (!match) {
+    return { timestamp: new Date().toISOString(), message: line };
+  }
+
+  const parsedDate = new Date(match[1]);
+  if (Number.isNaN(parsedDate.getTime())) {
+    return { timestamp: new Date().toISOString(), message: line };
+  }
+
+  return {
+    timestamp: parsedDate.toISOString(),
+    message: match[2] || '',
+  };
+}
+
 function mapPodStatus(phase, containerStatuses = []) {
   for (const cs of containerStatuses) {
     if (cs?.state?.waiting?.reason === 'CrashLoopBackOff') return 'CrashLoopBackOff';
@@ -158,9 +225,19 @@ async function ensureSchema(pool) {
       last_state_reason TEXT,
       last_state_exit_code INTEGER,
       last_state_message TEXT,
+      cpu_request_millicores INTEGER,
+      cpu_limit_millicores INTEGER,
+      memory_request_bytes BIGINT,
+      memory_limit_bytes BIGINT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+
+    ALTER TABLE containers
+      ADD COLUMN IF NOT EXISTS cpu_request_millicores INTEGER,
+      ADD COLUMN IF NOT EXISTS cpu_limit_millicores INTEGER,
+      ADD COLUMN IF NOT EXISTS memory_request_bytes BIGINT,
+      ADD COLUMN IF NOT EXISTS memory_limit_bytes BIGINT;
 
     CREATE TABLE IF NOT EXISTS logs (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -176,6 +253,16 @@ async function ensureSchema(pool) {
     CREATE INDEX IF NOT EXISTS idx_containers_pod_id ON containers(pod_id);
     CREATE INDEX IF NOT EXISTS idx_logs_container_id ON logs(container_id);
     CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp DESC);
+
+    DELETE FROM logs a
+    USING logs b
+    WHERE a.ctid < b.ctid
+      AND a.container_id = b.container_id
+      AND a.timestamp = b.timestamp
+      AND a.message = b.message;
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_logs_container_timestamp_message
+      ON logs(container_id, timestamp, message);
   `);
 }
 
@@ -195,7 +282,6 @@ async function main() {
     try {
       await db.query('BEGIN');
 
-      const currentPodIds = [];
       let podCount = 0;
       let containerCount = 0;
       let logCount = 0;
@@ -203,8 +289,6 @@ async function main() {
       for (const pod of pods) {
         const podId = pod.metadata?.uid;
         if (!podId) continue;
-        currentPodIds.push(podId);
-
         const containerStatuses = pod.status?.containerStatuses || [];
         const restarts = containerStatuses.reduce((sum, cs) => sum + (cs.restartCount || 0), 0);
 
@@ -235,12 +319,20 @@ async function main() {
         podCount += 1;
 
         for (const cs of containerStatuses) {
+          const podSpecContainer = (pod.spec?.containers || []).find((container) => container.name === cs.name);
+          const containerResources = podSpecContainer?.resources || {};
+          const requests = containerResources.requests || {};
+          const limits = containerResources.limits || {};
           const containerId = makeUuidFromString(`${podId}:${cs.name}`);
           const state = cs.state || {};
 
           await db.query(
-            `INSERT INTO containers (id, pod_id, name, image, status, ready, restart_count, started_at, last_state_reason, last_state_exit_code, last_state_message, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now())
+            `INSERT INTO containers (
+               id, pod_id, name, image, status, ready, restart_count, started_at,
+               last_state_reason, last_state_exit_code, last_state_message,
+               cpu_request_millicores, cpu_limit_millicores, memory_request_bytes, memory_limit_bytes, updated_at
+             )
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, now())
              ON CONFLICT (id) DO UPDATE SET
                name = EXCLUDED.name,
                image = EXCLUDED.image,
@@ -251,6 +343,10 @@ async function main() {
                last_state_reason = EXCLUDED.last_state_reason,
                last_state_exit_code = EXCLUDED.last_state_exit_code,
                last_state_message = EXCLUDED.last_state_message,
+               cpu_request_millicores = EXCLUDED.cpu_request_millicores,
+               cpu_limit_millicores = EXCLUDED.cpu_limit_millicores,
+               memory_request_bytes = EXCLUDED.memory_request_bytes,
+               memory_limit_bytes = EXCLUDED.memory_limit_bytes,
                updated_at = now()`,
             [
               containerId,
@@ -264,13 +360,17 @@ async function main() {
               cs.lastState?.terminated?.reason || state.waiting?.reason || state.terminated?.reason || null,
               cs.lastState?.terminated?.exitCode ?? state.terminated?.exitCode ?? null,
               cs.lastState?.terminated?.message || state.waiting?.message || state.terminated?.message || null,
+              parseCpuToMillicores(requests.cpu),
+              parseCpuToMillicores(limits.cpu),
+              parseMemoryToBytes(requests.memory),
+              parseMemoryToBytes(limits.memory),
             ]
           );
           containerCount += 1;
 
           try {
             const logRaw = await k8sGet(
-              `/api/v1/namespaces/${TARGET_NAMESPACE}/pods/${encodeURIComponent(pod.metadata?.name || '')}/log?container=${encodeURIComponent(cs.name)}&tailLines=${LOG_TAIL_LINES}`,
+              `/api/v1/namespaces/${TARGET_NAMESPACE}/pods/${encodeURIComponent(pod.metadata?.name || '')}/log?container=${encodeURIComponent(cs.name)}&tailLines=${LOG_TAIL_LINES}&timestamps=true`,
               token,
               ca
             );
@@ -281,11 +381,19 @@ async function main() {
               .filter(Boolean)
               .slice(-LOG_TAIL_LINES);
 
-            for (const message of lines) {
+            for (const rawLine of lines) {
+              const parsed = parseK8sLogLine(rawLine);
+              if (!parsed.message) continue;
               await db.query(
                 `INSERT INTO logs (container_id, timestamp, level, message)
-                 VALUES ($1, now(), $2, $3)`,
-                [containerId, inferLogLevel(message), message]
+                 VALUES ($1, $2, $3, $4)
+                 ON CONFLICT (container_id, timestamp, message) DO NOTHING`,
+                [
+                  containerId,
+                  parsed.timestamp,
+                  inferLogLevel(parsed.message),
+                  parsed.message,
+                ]
               );
               logCount += 1;
             }
@@ -293,11 +401,6 @@ async function main() {
             console.warn(`Skipping logs for ${pod.metadata?.name}/${cs.name}:`, error.message);
           }
         }
-      }
-
-      if (currentPodIds.length > 0) {
-        await db.query('DELETE FROM containers WHERE pod_id <> ALL($1::uuid[])', [currentPodIds]);
-        await db.query('DELETE FROM pods WHERE id <> ALL($1::uuid[])', [currentPodIds]);
       }
 
       await db.query('COMMIT');

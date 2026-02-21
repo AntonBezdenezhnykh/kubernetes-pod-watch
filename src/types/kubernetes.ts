@@ -17,6 +17,10 @@ export interface Container {
     exitCode?: number;
     message?: string;
   };
+  cpuRequestMillicores?: number | null;
+  cpuLimitMillicores?: number | null;
+  memoryRequestBytes?: number | null;
+  memoryLimitBytes?: number | null;
 }
 
 export interface Pod {
@@ -30,6 +34,11 @@ export interface Pod {
   containers: Container[];
   labels: Record<string, string>;
   restarts: number;
+  logSummary: {
+    errors: number;
+    warnings: number;
+    exceptions: number;
+  };
 }
 
 // Extended pod with computed health status
@@ -39,6 +48,21 @@ export interface PodWithHealth extends Pod {
   hasLogErrors: boolean;
   attentionScore: number;
   attentionReason: string | null;
+  deploymentName: string;
+}
+
+export interface DeploymentGroup {
+  id: string;
+  name: string;
+  pods: PodWithHealth[];
+  health: HealthStatus;
+  attentionScore: number;
+  latestCreatedAt: string;
+  healthSummary: {
+    healthy: number;
+    warning: number;
+    error: number;
+  };
 }
 
 // Version group for comparing deployments
@@ -58,6 +82,12 @@ export interface LogEntry {
   timestamp: string;
   level: 'info' | 'warn' | 'error';
   message: string;
+}
+
+export interface ResourceSample {
+  sampledAt: string;
+  cpuMillicores: number;
+  memoryBytes: number;
 }
 
 // Container status history for timeline

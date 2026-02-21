@@ -66,13 +66,29 @@ serve(async (req) => {
 
           const containersResult = await connection.queryObject(`
             SELECT id, pod_id, name, image, status, ready, restart_count, started_at, 
-                   last_state_reason, last_state_exit_code, last_state_message, created_at, updated_at
+                   last_state_reason, last_state_exit_code, last_state_message,
+                   cpu_request_millicores, cpu_limit_millicores, memory_request_bytes, memory_limit_bytes,
+                   created_at, updated_at
             FROM containers
+          `);
+
+          const podLogSummariesResult = await connection.queryObject(`
+            SELECT
+              c.pod_id,
+              COUNT(*) FILTER (WHERE l.level = 'error')::int AS error_count,
+              COUNT(*) FILTER (WHERE l.level = 'warn')::int AS warning_count,
+              COUNT(*) FILTER (
+                WHERE l.message ~* '(exception|stacktrace|traceback|(^|\\s)at\\s+\\S+)'
+              )::int AS exception_count
+            FROM logs l
+            JOIN containers c ON c.id = l.container_id
+            GROUP BY c.pod_id
           `);
 
           result = {
             pods: podsResult.rows,
             containers: containersResult.rows,
+            podLogSummaries: podLogSummariesResult.rows,
           };
         } finally {
           connection.release();
@@ -96,6 +112,39 @@ serve(async (req) => {
           `, [containerId]);
 
           result = { logs: logsResult.rows };
+        } finally {
+          connection.release();
+        }
+        break;
+      }
+
+      case "getResourceSamples": {
+        const containerId = url.searchParams.get("containerId");
+        if (!containerId) {
+          throw new Error("containerId is required");
+        }
+
+        const connection = await pool.connect();
+        try {
+          let samplesResult;
+          try {
+            samplesResult = await connection.queryObject(`
+              SELECT sampled_at, cpu_millicores, memory_bytes
+              FROM container_resource_samples
+              WHERE container_id = $1
+              ORDER BY sampled_at DESC
+              LIMIT 120
+            `, [containerId]);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (message.includes("container_resource_samples")) {
+              samplesResult = { rows: [] };
+            } else {
+              throw error;
+            }
+          }
+
+          result = { samples: [...samplesResult.rows].reverse() };
         } finally {
           connection.release();
         }

@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { Container, LogEntry } from '@/types/kubernetes';
-import { useContainerLogs } from '@/hooks/useKubernetesData';
+import { useContainerLogs, useContainerResourceSamples } from '@/hooks/useKubernetesData';
 import { cn } from '@/lib/utils';
 import { format } from 'date-fns';
-import { Terminal, Download, Search, ArrowDown, Loader2 } from 'lucide-react';
+import { Terminal, Download, Search, ArrowDown, Loader2, Maximize2, Minimize2 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 
@@ -13,9 +13,11 @@ interface LogViewerProps {
 
 export const LogViewer = ({ container }: LogViewerProps) => {
   const { data: logs = [], isLoading, error } = useContainerLogs(container.id);
+  const { data: resourceSamples = [] } = useContainerResourceSamples(container.id);
   const [searchTerm, setSearchTerm] = useState('');
   const [quickFilter, setQuickFilter] = useState<'all' | 'error' | 'warning' | 'exception'>('all');
   const [autoScroll, setAutoScroll] = useState(true);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const logsEndRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -77,8 +79,75 @@ export const LogViewer = ({ container }: LogViewerProps) => {
     URL.revokeObjectURL(url);
   };
 
-  return (
-    <div className="h-full flex flex-col terminal-window">
+  const findNearestResourceSample = (logTs: string) => {
+    if (resourceSamples.length === 0) return null;
+    const targetMs = new Date(logTs).getTime();
+    if (!Number.isFinite(targetMs)) return null;
+
+    let best = resourceSamples[0];
+    let bestDelta = Math.abs(new Date(best.sampledAt).getTime() - targetMs);
+    for (let i = 1; i < resourceSamples.length; i += 1) {
+      const candidate = resourceSamples[i];
+      const delta = Math.abs(new Date(candidate.sampledAt).getTime() - targetMs);
+      if (delta < bestDelta) {
+        best = candidate;
+        bestDelta = delta;
+      }
+    }
+    return best;
+  };
+
+  const formatPercent = (value: number) => `${value.toFixed(1)}%`;
+  const hasResourceLimits =
+    (container.cpuLimitMillicores ?? 0) > 0 || (container.memoryLimitBytes ?? 0) > 0;
+
+  const renderLogLine = (log: LogEntry) => {
+    const nearestSample = findNearestResourceSample(log.timestamp);
+    const cpuLimit = container.cpuLimitMillicores ?? 0;
+    const memoryLimit = container.memoryLimitBytes ?? 0;
+
+    const cpuPercent = nearestSample && cpuLimit > 0
+      ? (nearestSample.cpuMillicores / cpuLimit) * 100
+      : null;
+    const memoryPercent = nearestSample && memoryLimit > 0
+      ? (nearestSample.memoryBytes / memoryLimit) * 100
+      : null;
+
+    return (
+      <div key={log.id} className="log-line">
+        <span className="log-timestamp">
+          {format(new Date(log.timestamp), 'HH:mm:ss.SSS')}
+        </span>
+        <span
+          className={cn(
+            log.level === 'info' && 'log-info',
+            log.level === 'warn' && 'log-warn',
+            log.level === 'error' && 'log-error'
+          )}
+        >
+          [{log.level.toUpperCase().padEnd(5)}]
+        </span>
+        {hasResourceLimits && (cpuPercent !== null || memoryPercent !== null) && (
+          <span className="ml-2 text-[11px] text-muted-foreground">
+            {cpuPercent !== null && (
+              <span className="mr-2">
+                CPU {formatPercent(cpuPercent)}
+              </span>
+            )}
+            {memoryPercent !== null && (
+              <span>
+                RAM {formatPercent(memoryPercent)}
+              </span>
+            )}
+          </span>
+        )}
+        <span className="ml-2">{log.message}</span>
+      </div>
+    );
+  };
+
+  const viewerBody = (
+    <div className={cn('h-full flex flex-col terminal-window relative', isFullscreen && 'h-[calc(100vh-1.5rem)]')}>
       {/* Terminal Header */}
       <div className="terminal-header">
         <div className="flex items-center gap-2 flex-1">
@@ -151,6 +220,15 @@ export const LogViewer = ({ container }: LogViewerProps) => {
             variant="ghost"
             size="icon"
             className="h-7 w-7"
+            onClick={() => setIsFullscreen((prev) => !prev)}
+            title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+          >
+            {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
             onClick={downloadLogs}
             title="Download logs"
           >
@@ -158,6 +236,12 @@ export const LogViewer = ({ container }: LogViewerProps) => {
           </Button>
         </div>
       </div>
+
+      {!hasResourceLimits && (
+        <div className="px-4 py-1 text-[11px] text-muted-foreground border-b border-[hsl(var(--terminal-border))]">
+          CPU/RAM percent near logs is hidden because this container has no resource limits set.
+        </div>
+      )}
 
       {/* Log Content */}
       <div
@@ -185,23 +269,7 @@ export const LogViewer = ({ container }: LogViewerProps) => {
           </div>
         ) : (
           <div className="py-2">
-            {filteredLogs.map((log) => (
-              <div key={log.id} className="log-line">
-                <span className="log-timestamp">
-                  {format(new Date(log.timestamp), 'HH:mm:ss')}
-                </span>
-                <span
-                  className={cn(
-                    log.level === 'info' && 'log-info',
-                    log.level === 'warn' && 'log-warn',
-                    log.level === 'error' && 'log-error'
-                  )}
-                >
-                  [{log.level.toUpperCase().padEnd(5)}]
-                </span>
-                <span className="ml-2">{log.message}</span>
-              </div>
-            ))}
+            {filteredLogs.map(renderLogLine)}
             <div ref={logsEndRef} />
           </div>
         )}
@@ -219,4 +287,11 @@ export const LogViewer = ({ container }: LogViewerProps) => {
       )}
     </div>
   );
+
+  return isFullscreen ? (
+    <>
+      <div className="fixed inset-0 z-40 bg-black/70" onClick={() => setIsFullscreen(false)} />
+      <div className="fixed inset-3 z-50">{viewerBody}</div>
+    </>
+  ) : viewerBody;
 };

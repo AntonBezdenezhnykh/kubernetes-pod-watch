@@ -18,6 +18,8 @@ import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { ContainerHistoryPanel } from './ContainerHistoryPanel';
 import { LogViewer } from './LogViewer';
+import { ResourceUsagePanel } from './ResourceUsagePanel';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 interface PodDetailPanelProps {
   pod: PodWithHealth;
@@ -27,6 +29,7 @@ interface PodDetailPanelProps {
 export const PodDetailPanel = ({ pod, onClose }: PodDetailPanelProps) => {
   const [selectedContainer, setSelectedContainer] = useState<Container | null>(null);
   const [copiedField, setCopiedField] = useState<string | null>(null);
+  const [detailTab, setDetailTab] = useState<'logs' | 'resources'>('logs');
 
   useEffect(() => {
     if (pod.containers.length === 0) {
@@ -174,8 +177,23 @@ export const PodDetailPanel = ({ pod, onClose }: PodDetailPanelProps) => {
 
         {/* Logs section */}
         {selectedContainer && (
-          <div className="h-72 border-t border-border">
-            <LogViewer key={selectedContainer.id} container={selectedContainer} />
+          <div className="h-80 border-t border-border p-3">
+            <Tabs value={detailTab} onValueChange={(v) => setDetailTab(v as 'logs' | 'resources')} className="h-full flex flex-col">
+              <TabsList className="grid w-full grid-cols-2">
+                <TabsTrigger value="logs">Logs</TabsTrigger>
+                <TabsTrigger value="resources">Resources</TabsTrigger>
+              </TabsList>
+              <TabsContent value="logs" className="flex-1 min-h-0">
+                <div className="h-full rounded-lg border border-border/70 overflow-hidden">
+                  <LogViewer key={`logs-${selectedContainer.id}`} container={selectedContainer} />
+                </div>
+              </TabsContent>
+              <TabsContent value="resources" className="flex-1 min-h-0">
+                <div className="h-full rounded-lg border border-border/70 overflow-hidden">
+                  <ResourceUsagePanel key={`resources-${selectedContainer.id}`} container={selectedContainer} />
+                </div>
+              </TabsContent>
+            </Tabs>
           </div>
         )}
       </div>

@@ -222,29 +222,6 @@ async function syncToDb(pods: K8sPod[]): Promise<{ podsUpserted: number; contain
   return { podsUpserted, containersUpserted };
 }
 
-async function cleanupStalePods(currentPodIds: string[]): Promise<number> {
-  if (currentPodIds.length === 0) return 0;
-
-  const placeholders = currentPodIds.map((_, i) => `$${i + 1}`).join(",");
-  const dbPool = getPool();
-  const connection = await dbPool.connect();
-  try {
-    await connection.queryObject(
-      `DELETE FROM containers WHERE pod_id NOT IN (${placeholders})`,
-      currentPodIds
-    );
-
-    const result = await connection.queryObject<{ id: string }>(
-      `DELETE FROM pods WHERE id NOT IN (${placeholders}) RETURNING id`,
-      currentPodIds
-    );
-
-    return result.rows?.length ?? 0;
-  } finally {
-    connection.release();
-  }
-}
-
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -253,7 +230,6 @@ serve(async (req) => {
   try {
     const url = new URL(req.url);
     const action = url.searchParams.get("action") || "sync";
-    const cleanup = url.searchParams.get("cleanup") === "true";
 
     switch (action) {
       case "sync": {
@@ -264,12 +240,6 @@ serve(async (req) => {
 
         const result = await syncToDb(pods);
 
-        let podsDeleted = 0;
-        if (cleanup && pods.length > 0) {
-          const currentPodIds = pods.map((p) => p.metadata.uid);
-          podsDeleted = await cleanupStalePods(currentPodIds);
-        }
-
         const response = {
           success: true,
           timestamp: new Date().toISOString(),
@@ -277,7 +247,7 @@ serve(async (req) => {
             podsFetched: pods.length,
             podsUpserted: result.podsUpserted,
             containersUpserted: result.containersUpserted,
-            podsDeleted,
+            podsDeleted: 0,
           },
         };
 

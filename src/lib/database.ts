@@ -40,6 +40,10 @@ export interface DbContainer {
   last_state_reason: string | null;
   last_state_exit_code: number | null;
   last_state_message: string | null;
+  cpu_request_millicores: number | null;
+  cpu_limit_millicores: number | null;
+  memory_request_bytes: number | null;
+  memory_limit_bytes: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -53,8 +57,25 @@ export interface DbLog {
   created_at: string;
 }
 
+export interface DbResourceSample {
+  sampled_at: string;
+  cpu_millicores: number;
+  memory_bytes: number;
+}
+
+export interface DbPodLogSummary {
+  pod_id: string;
+  error_count: number;
+  warning_count: number;
+  exception_count: number;
+}
+
 // Fetch pods and containers from database (via edge function → external PostgreSQL)
-export async function fetchPodsAndContainers(): Promise<{ pods: DbPod[]; containers: DbContainer[] }> {
+export async function fetchPodsAndContainers(): Promise<{
+  pods: DbPod[];
+  containers: DbContainer[];
+  podLogSummaries: DbPodLogSummary[];
+}> {
   const response = await fetch(`${getBaseUrl()}?action=getPods`, {
     headers: getAuthHeaders(),
   });
@@ -65,7 +86,11 @@ export async function fetchPodsAndContainers(): Promise<{ pods: DbPod[]; contain
   }
 
   const result = await response.json();
-  return { pods: result.pods || [], containers: result.containers || [] };
+  return {
+    pods: result.pods || [],
+    containers: result.containers || [],
+    podLogSummaries: result.podLogSummaries || [],
+  };
 }
 
 // Fetch logs for a specific container
@@ -82,6 +107,21 @@ export async function fetchContainerLogs(containerId: string): Promise<DbLog[]> 
 
   const result = await response.json();
   return result.logs || [];
+}
+
+export async function fetchContainerResourceSamples(containerId: string): Promise<DbResourceSample[]> {
+  const response = await fetch(
+    `${getBaseUrl()}?action=getResourceSamples&containerId=${encodeURIComponent(containerId)}`,
+    { headers: getAuthHeaders() }
+  );
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to fetch resource samples');
+  }
+
+  const result = await response.json();
+  return result.samples || [];
 }
 
 // Check database health
