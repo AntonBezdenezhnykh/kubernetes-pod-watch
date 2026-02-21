@@ -81,7 +81,7 @@ export const ContainerHistoryPanel = ({
   };
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="flex flex-col">
       {/* Header */}
       <div className="p-4 border-b border-border">
         <div className="flex items-center justify-between">
@@ -108,7 +108,7 @@ export const ContainerHistoryPanel = ({
       </div>
 
       {/* Container list */}
-      <div className="flex-1 overflow-y-auto scrollbar-thin p-3 space-y-2">
+      <div className="max-h-[38vh] overflow-y-auto scrollbar-thin p-3 space-y-2">
         {orderedContainers.map(({ container, sidecar }, index) => {
           const config = getStatusConfig(container);
           const StatusIcon = config.icon;

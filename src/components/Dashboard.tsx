@@ -184,7 +184,7 @@ export const Dashboard = () => {
           />
         </div>
 
-        <div className="grid grid-cols-12 gap-4">
+        <div className="grid grid-cols-12 gap-4 items-start">
           <section className="col-span-3 bg-card rounded-xl border border-border p-3">
             <h2 className="text-sm font-semibold mb-3">Deployments</h2>
             <button
