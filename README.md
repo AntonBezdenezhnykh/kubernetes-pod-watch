@@ -18,6 +18,13 @@ It is designed to answer, quickly:
   - jump to log start/end buttons,
   - nearest CPU/RAM % near log lines (based on container limits).
 - Continuous resource sampling (CPU/RAM every 30s).
+- Collector performance hardening:
+  - batched log inserts (instead of per-line DB insert),
+  - log message length cap (`MAX_LOG_MESSAGE_LENGTH`).
+- API performance/security hardening:
+  - bounded log fetch (`limit`, default `2000`, max `5000`),
+  - configurable CORS allow-origin,
+  - basic response security headers.
 - Version impact scoring:
   - per container (vs previous version),
   - per pod (aggregate),
@@ -81,6 +88,23 @@ Kubernetes API -> collectors -> PostgreSQL -> app API -> browser UI
 - External PostgreSQL reachable from cluster
 - `docker`, `kubectl`, `envsubst`, `make`
 
+## Docker Build (cross-platform)
+
+Dockerfile is architecture-aware for `node:20-alpine`:
+- `linux/amd64` installs musl-native Rollup/SWC bindings.
+- `linux/arm64` installs musl-native Rollup/SWC bindings.
+
+Examples:
+
+```bash
+# local default platform
+docker build -t kubernetes-pod-watch:v1.1.x .
+
+# explicit amd64 / arm64
+docker build --platform linux/amd64 -t kubernetes-pod-watch:test-amd64 .
+docker build --platform linux/arm64 -t kubernetes-pod-watch:test-arm64 .
+```
+
 ## Local Deployment (quick)
 
 1. Build image:
@@ -135,6 +159,12 @@ Required variables:
 - `DB_USER`
 - `DB_PASSWORD`
 - `DB_SSL`
+
+Optional runtime tuning variables:
+- `CORS_ALLOW_ORIGIN` (restrict API CORS; if empty, wildcard behavior is used)
+- `LOG_QUERY_LIMIT_DEFAULT` (default max logs returned per request; default `2000`)
+- `LOG_QUERY_LIMIT_MAX` (upper bound for user-requested log limit; default `5000`)
+- `MAX_LOG_MESSAGE_LENGTH` (collector-side truncation length per log line; default `8192`)
 
 ### 2) Render and apply (recommended)
 
@@ -210,3 +240,9 @@ Notes:
 4. DB auth/SSL failures
 - verify `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_SSL`
 - verify network policy/firewall from cluster to PostgreSQL
+
+5. Docker build fails on Intel/ARM host
+- use the updated Dockerfile from this repository (platform-aware native deps)
+- test with explicit platform:
+  - `docker build --platform linux/amd64 ...`
+  - `docker build --platform linux/arm64 ...`

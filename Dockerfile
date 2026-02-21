@@ -1,8 +1,14 @@
 FROM node:20-alpine AS build
+ARG TARGETOS
+ARG TARGETARCH
 WORKDIR /app
 COPY package*.json ./
 RUN npm install --no-audit --no-fund \
-    && npm install --no-save --no-audit --no-fund @rollup/rollup-linux-arm64-musl @swc/core-linux-arm64-musl
+    && if [ "$TARGETOS" = "linux" ] && [ "$TARGETARCH" = "arm64" ]; then \
+         npm install --no-save --no-audit --no-fund @rollup/rollup-linux-arm64-musl @swc/core-linux-arm64-musl; \
+       elif [ "$TARGETOS" = "linux" ] && [ "$TARGETARCH" = "amd64" ]; then \
+         npm install --no-save --no-audit --no-fund @rollup/rollup-linux-x64-musl @swc/core-linux-x64-musl; \
+       fi
 COPY . .
 RUN npm run build
 
