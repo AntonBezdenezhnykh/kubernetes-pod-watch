@@ -7,6 +7,7 @@ import {
   DbPod,
   DbContainer,
   DbLog,
+  DbContainerLogSummary,
   DbPodLogSummary,
   DbResourceSample,
 } from '@/lib/database';
@@ -111,10 +112,18 @@ export const usePods = () => {
 export const useContainerLogs = (containerId: string | null) => {
   return useQuery({
     queryKey: ['logs', containerId],
-    queryFn: async (): Promise<LogEntry[]> => {
-      if (!containerId) return [];
-      const logs = await fetchContainerLogs(containerId, 2000);
-      return logs.map(transformLog);
+    queryFn: async (): Promise<{ logs: LogEntry[]; summary: DbContainerLogSummary }> => {
+      if (!containerId) {
+        return {
+          logs: [],
+          summary: { error_count: 0, warning_count: 0, exception_count: 0 },
+        };
+      }
+      const { logs, summary } = await fetchContainerLogs(containerId, 2000);
+      return {
+        logs: logs.map(transformLog),
+        summary,
+      };
     },
     enabled: !!containerId,
     refetchInterval: 10000,

@@ -124,15 +124,34 @@ serve(async (req) => {
 
         const connection = await pool.connect();
         try {
-          const logsResult = await connection.queryObject(`
-            SELECT id, container_id, timestamp, level, message, created_at
-            FROM logs
-            WHERE container_id = $1
-            ORDER BY timestamp DESC
-            LIMIT $2
-          `, [containerId, limit]);
+          const [logsResult, summaryResult] = await Promise.all([
+            connection.queryObject(`
+              SELECT id, container_id, timestamp, level, message, created_at
+              FROM logs
+              WHERE container_id = $1
+              ORDER BY timestamp DESC
+              LIMIT $2
+            `, [containerId, limit]),
+            connection.queryObject(`
+              SELECT
+                COUNT(*) FILTER (WHERE level = 'error')::int AS error_count,
+                COUNT(*) FILTER (WHERE level = 'warn')::int AS warning_count,
+                COUNT(*) FILTER (
+                  WHERE message ~* '(exception|stacktrace|traceback|(^|\\s)at\\s+\\S+)'
+                )::int AS exception_count
+              FROM logs
+              WHERE container_id = $1
+            `, [containerId]),
+          ]);
 
-          result = { logs: [...logsResult.rows].reverse() };
+          result = {
+            logs: [...logsResult.rows].reverse(),
+            summary: summaryResult.rows[0] ?? {
+              error_count: 0,
+              warning_count: 0,
+              exception_count: 0,
+            },
+          };
         } finally {
           connection.release();
         }

@@ -32,6 +32,7 @@ const DB_USER = process.env.DB_USER;
 const DB_PASSWORD = process.env.DB_PASSWORD || '';
 const DB_SSL = process.env.DB_SSL === 'true';
 const PORT = parseInt(process.env.API_PORT || process.env.PORT || '54321', 10);
+const HOST = process.env.API_HOST || process.env.HOST || '127.0.0.1';
 const STATIC_DIR = process.env.STATIC_DIR;
 const CORS_ALLOW_ORIGIN = process.env.CORS_ALLOW_ORIGIN || '';
 const LOG_QUERY_LIMIT_DEFAULT = parseInt(process.env.LOG_QUERY_LIMIT_DEFAULT || '2000', 10);
@@ -187,12 +188,28 @@ const server = createServer(async (req, res) => {
         const containerId = url.searchParams.get('containerId');
         if (!containerId) throw new Error('containerId is required');
         const limit = parseLogLimit(url);
-        const logsRes = await pool.query(
-          `SELECT id, container_id, timestamp, level, message, created_at
-           FROM logs WHERE container_id = $1 ORDER BY timestamp DESC LIMIT $2`,
-          [containerId, limit]
-        );
-        result = { logs: [...logsRes.rows].reverse() };
+        const [logsRes, summaryRes] = await Promise.all([
+          pool.query(
+            `SELECT id, container_id, timestamp, level, message, created_at
+             FROM logs WHERE container_id = $1 ORDER BY timestamp DESC LIMIT $2`,
+            [containerId, limit]
+          ),
+          pool.query(
+            `SELECT
+               COUNT(*) FILTER (WHERE level = 'error')::int AS error_count,
+               COUNT(*) FILTER (WHERE level = 'warn')::int AS warning_count,
+               COUNT(*) FILTER (
+                 WHERE message ~* '(exception|stacktrace|traceback|(^|\\s)at\\s+\\S+)'
+               )::int AS exception_count
+             FROM logs
+             WHERE container_id = $1`,
+            [containerId]
+          ),
+        ]);
+        result = {
+          logs: [...logsRes.rows].reverse(),
+          summary: summaryRes.rows[0] || { error_count: 0, warning_count: 0, exception_count: 0 },
+        };
         break;
       }
       case 'getResourceSamples': {
@@ -236,8 +253,8 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`Local DB API: http://localhost:${PORT}/functions/v1/database`);
+server.listen(PORT, HOST, () => {
+  console.log(`Local DB API: http://${HOST}:${PORT}/functions/v1/database`);
   if (staticRoot) {
     console.log(`Serving static files from: ${staticRoot}`);
   }

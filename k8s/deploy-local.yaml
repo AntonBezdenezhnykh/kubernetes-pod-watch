@@ -133,6 +133,14 @@ spec:
                   value: pod-watch
                 - name: LOG_TAIL_LINES
                   value: "100"
+                - name: LOG_RETENTION_DAYS
+                  value: "14"
+                - name: INFO_LOG_RETENTION_DAYS
+                  value: "2"
+                - name: POD_NAME_INCLUDE_PATTERNS
+                  value: ""
+                - name: POD_NAME_EXCLUDE_PATTERNS
+                  value: ""
                 - name: DB_HOST
                   value: host.docker.internal
                 - name: DB_PORT
@@ -145,6 +153,59 @@ spec:
                   value: ""
                 - name: DB_SSL
                   value: "false"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pod-watch-restart-watcher
+  namespace: pod-watch
+  labels:
+    app.kubernetes.io/name: pod-watch-restart-watcher
+    app.kubernetes.io/version: "1.1.5"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pod-watch-restart-watcher
+  template:
+    metadata:
+      labels:
+        app: pod-watch-restart-watcher
+        app.kubernetes.io/name: pod-watch-restart-watcher
+        app.kubernetes.io/version: "1.1.5"
+    spec:
+      serviceAccountName: pod-watch-sa
+      restartPolicy: Always
+      containers:
+        - name: restart-watcher
+          image: kubernetes-pod-watch:v1.1.5
+          imagePullPolicy: IfNotPresent
+          command: ["node", "scripts/k8s-restart-watcher.mjs"]
+          env:
+            - name: TARGET_NAMESPACE
+              value: pod-watch
+            - name: LOG_TAIL_LINES
+              value: "100"
+            - name: POD_NAME_INCLUDE_PATTERNS
+              value: ""
+            - name: POD_NAME_EXCLUDE_PATTERNS
+              value: ""
+            - name: RESTART_WATCH_TIMEOUT_SECONDS
+              value: "300"
+            - name: RESTART_WATCH_RECONNECT_DELAY_MS
+              value: "1000"
+            - name: DB_HOST
+              value: host.docker.internal
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              value: postgres
+            - name: DB_USER
+              value: postgres
+            - name: DB_PASSWORD
+              value: ""
+            - name: DB_SSL
+              value: "false"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -178,6 +239,10 @@ spec:
               value: pod-watch
             - name: SAMPLE_INTERVAL_SECONDS
               value: "30"
+            - name: POD_NAME_INCLUDE_PATTERNS
+              value: ""
+            - name: POD_NAME_EXCLUDE_PATTERNS
+              value: ""
             - name: DB_HOST
               value: host.docker.internal
             - name: DB_PORT

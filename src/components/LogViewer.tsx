@@ -12,8 +12,16 @@ interface LogViewerProps {
 }
 
 export const LogViewer = ({ container }: LogViewerProps) => {
-  const { data: logs = [], isLoading, error } = useContainerLogs(container.id);
+  const {
+    data: logData = {
+      logs: [],
+      summary: { error_count: 0, warning_count: 0, exception_count: 0 },
+    },
+    isLoading,
+    error,
+  } = useContainerLogs(container.id);
   const { data: resourceSamples = [] } = useContainerResourceSamples(container.id);
+  const logs = logData.logs;
   const [searchTerm, setSearchTerm] = useState('');
   const [quickFilter, setQuickFilter] = useState<'all' | 'error' | 'warning' | 'exception'>('all');
   const [autoScroll, setAutoScroll] = useState(true);
@@ -47,17 +55,16 @@ export const LogViewer = ({ container }: LogViewerProps) => {
       lower.includes('exception') ||
       lower.includes('stacktrace') ||
       lower.includes('traceback') ||
+      /^\s*file\s+".+",\s*line\s+\d+,\s*in\s+/i.test(message) ||
+      /^\s*caused by:/i.test(message) ||
       /\bat\s+\S+\s+\(.+\)/.test(message) ||
       /\bat\s+\S+\.\S+/.test(message)
     );
   };
 
-  const exceptionCount = useMemo(
-    () => logs.filter((log) => hasStackTracePattern(log.message)).length,
-    [logs]
-  );
-  const errorCount = useMemo(() => logs.filter((log) => log.level === 'error').length, [logs]);
-  const warningCount = useMemo(() => logs.filter((log) => log.level === 'warn').length, [logs]);
+  const exceptionCount = logData.summary.exception_count;
+  const errorCount = logData.summary.error_count;
+  const warningCount = logData.summary.warning_count;
 
   const filteredLogs = useMemo(
     () =>

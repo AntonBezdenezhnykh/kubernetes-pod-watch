@@ -165,6 +165,17 @@ Optional runtime tuning variables:
 - `LOG_QUERY_LIMIT_DEFAULT` (default max logs returned per request; default `2000`)
 - `LOG_QUERY_LIMIT_MAX` (upper bound for user-requested log limit; default `5000`)
 - `MAX_LOG_MESSAGE_LENGTH` (collector-side truncation length per log line; default `8192`)
+- `LOG_RETENTION_DAYS` (collector-side cleanup window for all logs; default `14`)
+- `INFO_LOG_RETENTION_DAYS` (collector-side cleanup window for `info` logs; default `2`)
+- `POD_NAME_INCLUDE_PATTERNS` (comma-separated pod name glob patterns to collect; empty means all pods)
+- `POD_NAME_EXCLUDE_PATTERNS` (comma-separated pod name glob patterns to skip; applied after include patterns)
+- `RESTART_WATCH_TIMEOUT_SECONDS` (Kubernetes watch stream timeout before reconnect; default `300`)
+- `RESTART_WATCH_RECONNECT_DELAY_MS` (delay before reconnect after watch failure; default `1000`)
+
+Collector notes:
+- logs from sidecar containers with names containing `alog`, `fluentbit`, `fluent-bit`, `fluentlog`, `fluentd`, or `istio` are skipped
+- log deduplication uses a compact hash-based unique index on `(container_id, timestamp, md5(message))`
+- the restart watcher watches pod updates and only fetches logs when a container restart count increases, pulling both `previous=true` and current logs into the same container history
 
 ### 2) Render and apply (recommended)
 
@@ -226,6 +237,7 @@ Notes:
 1. No data in UI
 - check collector job logs
 - verify `TARGET_NAMESPACE`
+- verify `POD_NAME_INCLUDE_PATTERNS` / `POD_NAME_EXCLUDE_PATTERNS` if pod filtering is enabled
 - verify DB connectivity from pods
 
 2. No resource graphs / no CPU-RAM %

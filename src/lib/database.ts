@@ -57,6 +57,12 @@ export interface DbLog {
   created_at: string;
 }
 
+export interface DbContainerLogSummary {
+  error_count: number;
+  warning_count: number;
+  exception_count: number;
+}
+
 export interface DbResourceSample {
   sampled_at: string;
   cpu_millicores: number;
@@ -93,8 +99,11 @@ export async function fetchPodsAndContainers(): Promise<{
   };
 }
 
-// Fetch logs for a specific container
-export async function fetchContainerLogs(containerId: string, limit = 2000): Promise<DbLog[]> {
+// Fetch logs plus full-history counts for a specific container
+export async function fetchContainerLogs(
+  containerId: string,
+  limit = 2000
+): Promise<{ logs: DbLog[]; summary: DbContainerLogSummary }> {
   const boundedLimit = Math.max(1, Math.min(limit, 5000));
   const response = await fetch(
     `${getBaseUrl()}?action=getLogs&containerId=${encodeURIComponent(containerId)}&limit=${boundedLimit}`,
@@ -107,7 +116,10 @@ export async function fetchContainerLogs(containerId: string, limit = 2000): Pro
   }
 
   const result = await response.json();
-  return result.logs || [];
+  return {
+    logs: result.logs || [],
+    summary: result.summary || { error_count: 0, warning_count: 0, exception_count: 0 },
+  };
 }
 
 export async function fetchContainerResourceSamples(containerId: string): Promise<DbResourceSample[]> {

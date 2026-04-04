@@ -3,16 +3,11 @@ import { cn } from '@/lib/utils';
 import { formatDistanceToNow, format } from 'date-fns';
 import {
   Box,
-  Server,
-  Network,
   Calendar,
-  Tag,
   X,
   CheckCircle,
   AlertTriangle,
   XCircle,
-  Copy,
-  Check,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
@@ -36,7 +31,6 @@ export const PodDetailPanel = ({
   podImpactsByPodId = {},
 }: PodDetailPanelProps) => {
   const [selectedContainer, setSelectedContainer] = useState<Container | null>(null);
-  const [copiedField, setCopiedField] = useState<string | null>(null);
   const [detailTab, setDetailTab] = useState<'logs' | 'resources'>('logs');
 
   const getPreferredContainer = (containers: Container[]): Container | null => {
@@ -91,12 +85,6 @@ export const PodDetailPanel = ({
   const config = healthConfig[pod.health];
   const HealthIcon = config.icon;
 
-  const copyToClipboard = (text: string, field: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedField(field);
-    setTimeout(() => setCopiedField(null), 2000);
-  };
-
   return (
     <div className="flex flex-col bg-card rounded-xl border border-border overflow-hidden">
       {/* Header */}
@@ -128,28 +116,6 @@ export const PodDetailPanel = ({
 
         {/* Metadata */}
         <div className="grid grid-cols-2 gap-3 mt-3 text-xs">
-          <div className="flex items-center gap-2 group">
-            <Server className="w-4 h-4 text-muted-foreground" />
-            <span className="text-muted-foreground">Node:</span>
-            <span className="truncate">{pod.nodeName || 'Pending'}</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <Network className="w-4 h-4 text-muted-foreground" />
-            <span className="text-muted-foreground">IP:</span>
-            <span className="font-mono">{pod.podIP || 'N/A'}</span>
-            {pod.podIP && (
-              <button
-                onClick={() => copyToClipboard(pod.podIP, 'ip')}
-                className="opacity-0 group-hover:opacity-100 transition-opacity"
-              >
-                {copiedField === 'ip' ? (
-                  <Check className="w-3.5 h-3.5 text-[hsl(var(--status-ready))]" />
-                ) : (
-                  <Copy className="w-3.5 h-3.5 text-muted-foreground" />
-                )}
-              </button>
-            )}
-          </div>
           <div className="flex items-center gap-2">
             <Calendar className="w-4 h-4 text-muted-foreground" />
             <span className="text-muted-foreground">Created:</span>
@@ -167,27 +133,6 @@ export const PodDetailPanel = ({
             </span>
           </div>
         </div>
-
-        {/* Labels */}
-        {Object.keys(pod.labels).length > 0 && (
-          <div className="mt-3">
-            <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-2">
-              <Tag className="w-3 h-3" />
-              Labels
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {Object.entries(pod.labels).map(([key, value]) => (
-                <span
-                  key={key}
-                  className="px-1.5 py-0.5 bg-secondary text-[11px] rounded font-mono truncate max-w-[200px]"
-                  title={`${key}=${value}`}
-                >
-                  {key}={value}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
 
       {/* Content area split between containers and logs */}

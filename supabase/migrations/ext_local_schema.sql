@@ -99,13 +99,14 @@ BEFORE UPDATE ON public.containers FOR EACH ROW EXECUTE FUNCTION public.update_u
 CREATE INDEX IF NOT EXISTS idx_pods_namespace ON public.pods(namespace);
 CREATE INDEX IF NOT EXISTS idx_pods_status ON public.pods(status);
 CREATE INDEX IF NOT EXISTS idx_containers_pod_id ON public.containers(pod_id);
-CREATE INDEX IF NOT EXISTS idx_logs_container_id ON public.logs(container_id);
-CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON public.logs(timestamp DESC);
+DROP INDEX IF EXISTS public.idx_logs_container_id;
+DROP INDEX IF EXISTS public.idx_logs_timestamp;
+DROP INDEX IF EXISTS public.idx_logs_container_timestamp_message;
 DELETE FROM public.logs a
 USING public.logs b
 WHERE a.ctid < b.ctid
   AND a.container_id = b.container_id
   AND a.timestamp = b.timestamp
   AND a.message = b.message;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_logs_container_timestamp_message
-    ON public.logs(container_id, timestamp, message);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_logs_container_timestamp_message_hash
+    ON public.logs(container_id, timestamp, md5(message));

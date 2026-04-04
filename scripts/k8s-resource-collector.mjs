@@ -10,6 +10,8 @@ const K8S_HOST = process.env.K8S_HOST || process.env.KUBERNETES_SERVICE_HOST || 
 const K8S_PORT = process.env.K8S_PORT || process.env.KUBERNETES_SERVICE_PORT || '443';
 const TARGET_NAMESPACE = process.env.TARGET_NAMESPACE || process.env.POD_NAMESPACE || 'default';
 const SAMPLE_INTERVAL_SECONDS = parseInt(process.env.SAMPLE_INTERVAL_SECONDS || '30', 10);
+const POD_NAME_INCLUDE_PATTERNS = parsePatternList(process.env.POD_NAME_INCLUDE_PATTERNS);
+const POD_NAME_EXCLUDE_PATTERNS = parsePatternList(process.env.POD_NAME_EXCLUDE_PATTERNS);
 
 const SA_TOKEN_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/token';
 const SA_CA_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/ca.crt';
@@ -97,6 +99,33 @@ function parseMemoryToBytes(quantity) {
   return Math.round(num);
 }
 
+function parsePatternList(value) {
+  return String(value || '')
+    .split(',')
+    .map((pattern) => pattern.trim())
+    .filter(Boolean);
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
+}
+
+function matchesPattern(value, pattern) {
+  const regex = new RegExp(`^${escapeRegExp(pattern).replace(/\*/g, '.*')}$`);
+  return regex.test(value);
+}
+
+function shouldCollectPod(podName) {
+  if (!podName) return false;
+
+  const included =
+    POD_NAME_INCLUDE_PATTERNS.length === 0 ||
+    POD_NAME_INCLUDE_PATTERNS.some((pattern) => matchesPattern(podName, pattern));
+  if (!included) return false;
+
+  return !POD_NAME_EXCLUDE_PATTERNS.some((pattern) => matchesPattern(podName, pattern));
+}
+
 function k8sGet(pathname, token, ca) {
   const options = {
     hostname: K8S_HOST,
@@ -169,6 +198,7 @@ async function fetchPodsIndex(token, ca) {
   for (const pod of podList.items || []) {
     const namespace = pod.metadata?.namespace || TARGET_NAMESPACE;
     const podName = pod.metadata?.name || '';
+    if (!shouldCollectPod(podName)) continue;
     const key = `${namespace}/${podName}`;
     byNamespaceName.set(key, {
       uid: pod.metadata?.uid,
@@ -196,17 +226,22 @@ async function fetchPodsIndex(token, ca) {
   return { byNamespaceName, byRuntimeContainerId };
 }
 
-async function fetchViaMetricsApi(token, ca) {
+async function fetchViaMetricsApi(token, ca, podsIndex) {
   const raw = await k8sGet(`/apis/metrics.k8s.io/v1beta1/namespaces/${TARGET_NAMESPACE}/pods`, token, ca);
   const metricsList = JSON.parse(raw);
   const rows = [];
 
   for (const pod of metricsList.items || []) {
-    const podUid = pod.metadata?.uid;
+    const podNamespace = pod.metadata?.namespace || TARGET_NAMESPACE;
     const podName = pod.metadata?.name;
-    if (!podUid || !podName) continue;
+    if (!podName || !shouldCollectPod(podName)) continue;
+
+    const podUid =
+      pod.metadata?.uid || podsIndex.byNamespaceName.get(`${podNamespace}/${podName}`)?.uid;
+    if (!podUid) continue;
 
     for (const container of pod.containers || []) {
+      if (!container?.name || container.name === 'POD') continue;
       const cpuRaw = container.usage?.cpu || '0';
       const memoryRaw = container.usage?.memory || '0';
       rows.push({
@@ -245,7 +280,7 @@ async function fetchViaNodeSummary(token, ca, podsIndex) {
       if (namespace !== TARGET_NAMESPACE) continue;
 
       const podName = pod.podRef?.name;
-      if (!podName) continue;
+      if (!podName || !shouldCollectPod(podName)) continue;
 
       const key = `${namespace}/${podName}`;
       const mapped = podsIndex.byNamespaceName.get(key);
@@ -333,6 +368,7 @@ async function fetchViaCadvisor(token, ca, podsIndex) {
       }
 
       if (!namespace || namespace !== TARGET_NAMESPACE || !podName || !containerName) continue;
+      if (!shouldCollectPod(podName)) continue;
 
       const key = `${namespace}/${podName}/${containerName}`;
       if (parsed.metric === 'container_cpu_usage_seconds_total') {
@@ -377,7 +413,7 @@ async function fetchViaCadvisor(token, ca, podsIndex) {
 async function fetchUsageRows(token, ca) {
   const podsIndex = await fetchPodsIndex(token, ca);
   try {
-    return await fetchViaMetricsApi(token, ca);
+    return await fetchViaMetricsApi(token, ca, podsIndex);
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     console.warn(`metrics.k8s.io unavailable, falling back to cadvisor metrics API: ${msg}`);
@@ -440,7 +476,7 @@ async function main() {
 
   await ensureSchema(pool);
   console.log(
-    `Resource collector started namespace=${TARGET_NAMESPACE} interval=${SAMPLE_INTERVAL_SECONDS}s`
+    `Resource collector started namespace=${TARGET_NAMESPACE} interval=${SAMPLE_INTERVAL_SECONDS}s includePatterns=${POD_NAME_INCLUDE_PATTERNS.join('|') || 'all'} excludePatterns=${POD_NAME_EXCLUDE_PATTERNS.join('|') || 'none'}`
   );
 
   while (true) {

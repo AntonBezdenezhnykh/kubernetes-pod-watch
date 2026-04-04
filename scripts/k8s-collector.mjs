@@ -11,6 +11,17 @@ const K8S_PORT = process.env.K8S_PORT || process.env.KUBERNETES_SERVICE_PORT || 
 const TARGET_NAMESPACE = process.env.TARGET_NAMESPACE || process.env.POD_NAMESPACE || 'default';
 const LOG_TAIL_LINES = parseInt(process.env.LOG_TAIL_LINES || '100', 10);
 const MAX_LOG_MESSAGE_LENGTH = parseInt(process.env.MAX_LOG_MESSAGE_LENGTH || '8192', 10);
+const parsedLogRetentionDays = parseInt(process.env.LOG_RETENTION_DAYS || '14', 10);
+const LOG_RETENTION_DAYS =
+  Number.isFinite(parsedLogRetentionDays) && parsedLogRetentionDays >= 0 ? parsedLogRetentionDays : 14;
+const parsedInfoLogRetentionDays = parseInt(process.env.INFO_LOG_RETENTION_DAYS || '2', 10);
+const INFO_LOG_RETENTION_DAYS =
+  Number.isFinite(parsedInfoLogRetentionDays) && parsedInfoLogRetentionDays >= 0
+    ? parsedInfoLogRetentionDays
+    : 2;
+const POD_NAME_INCLUDE_PATTERNS = parsePatternList(process.env.POD_NAME_INCLUDE_PATTERNS);
+const POD_NAME_EXCLUDE_PATTERNS = parsePatternList(process.env.POD_NAME_EXCLUDE_PATTERNS);
+const SIDECAR_LOG_STOP_WORDS = ['alog', 'fluentbit', 'fluent-bit', 'fluentlog', 'fluentd', 'istio'];
 
 const SA_TOKEN_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/token';
 const SA_CA_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/ca.crt';
@@ -119,6 +130,87 @@ function parseK8sLogLine(line) {
     timestamp: parsedDate.toISOString(),
     message: match[2] || '',
   };
+}
+
+function parsePatternList(value) {
+  return String(value || '')
+    .split(',')
+    .map((pattern) => pattern.trim())
+    .filter(Boolean);
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
+}
+
+function matchesPattern(value, pattern) {
+  const regex = new RegExp(`^${escapeRegExp(pattern).replace(/\*/g, '.*')}$`);
+  return regex.test(value);
+}
+
+function shouldCollectPod(podName) {
+  if (!podName) return false;
+
+  const included =
+    POD_NAME_INCLUDE_PATTERNS.length === 0 ||
+    POD_NAME_INCLUDE_PATTERNS.some((pattern) => matchesPattern(podName, pattern));
+  if (!included) return false;
+
+  return !POD_NAME_EXCLUDE_PATTERNS.some((pattern) => matchesPattern(podName, pattern));
+}
+
+function shouldCollectContainerLogs(containerName) {
+  const normalized = String(containerName || '').toLowerCase();
+  if (!normalized) return false;
+  return !SIDECAR_LOG_STOP_WORDS.some((word) => normalized.includes(word));
+}
+
+async function collectContainerLogs(db, token, ca, podName, containerName, containerId, { previous = false } = {}) {
+  const query = new URLSearchParams({
+    container: containerName,
+    tailLines: String(LOG_TAIL_LINES),
+    timestamps: 'true',
+  });
+  if (previous) {
+    query.set('previous', 'true');
+  }
+
+  const logRaw = await k8sGet(
+    `/api/v1/namespaces/${TARGET_NAMESPACE}/pods/${encodeURIComponent(podName)}/log?${query.toString()}`,
+    token,
+    ca
+  );
+
+  const lines = logRaw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-LOG_TAIL_LINES);
+
+  const timestamps = [];
+  const levels = [];
+  const messages = [];
+
+  for (const rawLine of lines) {
+    const parsed = parseK8sLogLine(rawLine);
+    if (!parsed.message) continue;
+    timestamps.push(parsed.timestamp);
+    levels.push(inferLogLevel(parsed.message));
+    messages.push(parsed.message.slice(0, MAX_LOG_MESSAGE_LENGTH));
+  }
+
+  if (messages.length === 0) {
+    return 0;
+  }
+
+  const insertResult = await db.query(
+    `INSERT INTO logs (container_id, timestamp, level, message)
+     SELECT $1, t.ts::timestamptz, t.lvl::log_level, t.msg
+     FROM unnest($2::text[], $3::text[], $4::text[]) AS t(ts, lvl, msg)
+     ON CONFLICT (container_id, timestamp, md5(message)) DO NOTHING`,
+    [containerId, timestamps, levels, messages]
+  );
+  return insertResult.rowCount || 0;
 }
 
 function mapPodStatus(phase, containerStatuses = []) {
@@ -252,8 +344,9 @@ async function ensureSchema(pool) {
     CREATE INDEX IF NOT EXISTS idx_pods_namespace ON pods(namespace);
     CREATE INDEX IF NOT EXISTS idx_pods_status ON pods(status);
     CREATE INDEX IF NOT EXISTS idx_containers_pod_id ON containers(pod_id);
-    CREATE INDEX IF NOT EXISTS idx_logs_container_id ON logs(container_id);
-    CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp DESC);
+    DROP INDEX IF EXISTS idx_logs_container_id;
+    DROP INDEX IF EXISTS idx_logs_timestamp;
+    DROP INDEX IF EXISTS idx_logs_container_timestamp_message;
 
     DELETE FROM logs a
     USING logs b
@@ -262,8 +355,8 @@ async function ensureSchema(pool) {
       AND a.timestamp = b.timestamp
       AND a.message = b.message;
 
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_logs_container_timestamp_message
-      ON logs(container_id, timestamp, message);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_logs_container_timestamp_message_hash
+      ON logs(container_id, timestamp, md5(message));
   `);
 }
 
@@ -277,15 +370,30 @@ async function main() {
 
     const podsRaw = await k8sGet(`/api/v1/namespaces/${TARGET_NAMESPACE}/pods`, token, ca);
     const podList = JSON.parse(podsRaw);
-    const pods = podList.items || [];
+    const pods = (podList.items || []).filter((pod) => shouldCollectPod(pod.metadata?.name || ''));
 
     const db = await pool.connect();
     try {
       await db.query('BEGIN');
 
+      const oldLogsCleanupResult = await db.query(
+        `DELETE FROM logs
+         WHERE timestamp < now() - make_interval(days => $1)`,
+        [LOG_RETENTION_DAYS]
+      );
+
+      const infoCleanupResult = await db.query(
+        `DELETE FROM logs
+         WHERE level = 'info'
+           AND timestamp < now() - make_interval(days => $1)`,
+        [Math.max(0, INFO_LOG_RETENTION_DAYS)]
+      );
+
       let podCount = 0;
       let containerCount = 0;
       let logCount = 0;
+      let cleanedOldLogCount = oldLogsCleanupResult.rowCount || 0;
+      let cleanedInfoLogCount = infoCleanupResult.rowCount || 0;
 
       for (const pod of pods) {
         const podId = pod.metadata?.uid;
@@ -369,40 +477,24 @@ async function main() {
           );
           containerCount += 1;
 
+          if (!shouldCollectContainerLogs(cs.name)) {
+            continue;
+          }
+
           try {
-            const logRaw = await k8sGet(
-              `/api/v1/namespaces/${TARGET_NAMESPACE}/pods/${encodeURIComponent(pod.metadata?.name || '')}/log?container=${encodeURIComponent(cs.name)}&tailLines=${LOG_TAIL_LINES}&timestamps=true`,
-              token,
-              ca
-            );
+            const podName = pod.metadata?.name || '';
+            logCount += await collectContainerLogs(db, token, ca, podName, cs.name, containerId);
 
-            const lines = logRaw
-              .split('\n')
-              .map((line) => line.trim())
-              .filter(Boolean)
-              .slice(-LOG_TAIL_LINES);
-
-            const timestamps = [];
-            const levels = [];
-            const messages = [];
-
-            for (const rawLine of lines) {
-              const parsed = parseK8sLogLine(rawLine);
-              if (!parsed.message) continue;
-              timestamps.push(parsed.timestamp);
-              levels.push(inferLogLevel(parsed.message));
-              messages.push(parsed.message.slice(0, MAX_LOG_MESSAGE_LENGTH));
-            }
-
-            if (messages.length > 0) {
-              const insertResult = await db.query(
-                `INSERT INTO logs (container_id, timestamp, level, message)
-                 SELECT $1, t.ts::timestamptz, t.lvl::log_level, t.msg
-                 FROM unnest($2::text[], $3::text[], $4::text[]) AS t(ts, lvl, msg)
-                 ON CONFLICT (container_id, timestamp, message) DO NOTHING`,
-                [containerId, timestamps, levels, messages]
-              );
-              logCount += insertResult.rowCount || 0;
+            const shouldCollectPreviousLogs =
+              (cs.restartCount || 0) > 0 || Boolean(cs.lastState?.terminated);
+            if (shouldCollectPreviousLogs) {
+              try {
+                logCount += await collectContainerLogs(db, token, ca, podName, cs.name, containerId, {
+                  previous: true,
+                });
+              } catch (error) {
+                console.warn(`Skipping previous logs for ${podName}/${cs.name}:`, error.message);
+              }
             }
           } catch (error) {
             console.warn(`Skipping logs for ${pod.metadata?.name}/${cs.name}:`, error.message);
@@ -411,7 +503,9 @@ async function main() {
       }
 
       await db.query('COMMIT');
-      console.log(`Sync complete namespace=${TARGET_NAMESPACE} pods=${podCount} containers=${containerCount} logs=${logCount}`);
+      console.log(
+        `Sync complete namespace=${TARGET_NAMESPACE} includePatterns=${POD_NAME_INCLUDE_PATTERNS.join('|') || 'all'} excludePatterns=${POD_NAME_EXCLUDE_PATTERNS.join('|') || 'none'} logRetentionDays=${LOG_RETENTION_DAYS} infoLogRetentionDays=${INFO_LOG_RETENTION_DAYS} cleanedOldLogs=${cleanedOldLogCount} cleanedInfoLogs=${cleanedInfoLogCount} pods=${podCount} containers=${containerCount} logs=${logCount}`
+      );
     } catch (error) {
       await db.query('ROLLBACK');
       throw error;
