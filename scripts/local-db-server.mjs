@@ -32,7 +32,8 @@ const DB_USER = process.env.DB_USER;
 const DB_PASSWORD = process.env.DB_PASSWORD || '';
 const DB_SSL = process.env.DB_SSL === 'true';
 const PORT = parseInt(process.env.API_PORT || process.env.PORT || '54321', 10);
-const HOST = process.env.API_HOST || process.env.HOST || '127.0.0.1';
+// Bind to all interfaces by default so Kubernetes readiness/liveness probes can reach the server.
+const HOST = process.env.API_HOST || process.env.HOST || '0.0.0.0';
 const STATIC_DIR = process.env.STATIC_DIR;
 const CORS_ALLOW_ORIGIN = process.env.CORS_ALLOW_ORIGIN || '';
 const LOG_QUERY_LIMIT_DEFAULT = parseInt(process.env.LOG_QUERY_LIMIT_DEFAULT || '2000', 10);
